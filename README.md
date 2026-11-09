@@ -27,19 +27,45 @@ Preferred Networks の **PLaMo 3 Translate**（0.8B / 2B / 8B）か、Google の
 
 ## 翻訳エンジン
 
-| エンジン | 置き場所 | 6ページの論文の目安 | 特徴 |
+| エンジン | 置き場所 | 必要な環境変数 | データの扱い |
 | --- | --- | --- | --- |
-| PLaMo 0.8B | PC内 | 約1.5分 | 最速。ときどき語の崩れや誤訳がある |
-| PLaMo 2B | PC内 | 約1.5分 | 標準。読みやすさと速さの釣り合いがよい |
-| PLaMo 8B | PC内 | 約5.5分 | いちばん自然。時間がかかる |
-| Gemini | Google | — | 設定でAPIキーを登録すると使える。本文がGoogleへ送られる |
+| PLaMo 0.8B / 2B / 8B | PC内 | なし | 外部に送らない |
+| DeepL API（Pro） | DeepL | `DEEPL_API_KEY` | Pro版は翻訳後に削除、学習に使わない（Free版のキー `…:fx` は条件を確認） |
+| Azure Translator | Microsoft | `AZURE_TRANSLATOR_KEY`（`AZURE_TRANSLATOR_REGION`・`AZURE_TRANSLATOR_ENDPOINT` は任意） | 保存しない（No Trace）、学習に使わない |
+| Google Cloud Translation | Google Cloud | `GOOGLE_CLOUD_TRANSLATE_API_KEY` | 学習に使わず、第三者に共有しない |
+| Gemini | Google | `GEMINI_API_KEY` | 有料枠は製品改善に使わない。無料枠は使われることがある |
 
-PLaMo は内蔵GPU（Intel Arc, Vulkan）で `llama/llama-server.exe` を動かします。モデルを切り替えると、
-サーバーは自動で入れ替わります。Gemini のキーとモデル名は `%APPDATA%\PLaMoPaperReader\settings.json` に保存されます。
+データの扱いは各社の公開情報の要約で、アプリの設定画面に公式ページへのリンクがあります。契約や枠によって変わるため、
+大事な論文を送る前には公式の条件を確認してください。
+
+**APIキーは環境変数で渡します。** コードや設定ファイルには書きません。PowerShell で次のように設定すると、
+アプリを再起動しなくても設定画面を開き直すだけで反映されます。
+
+```powershell
+setx DEEPL_API_KEY "キー"
+setx AZURE_TRANSLATOR_KEY "キー"
+setx AZURE_TRANSLATOR_REGION "japaneast"
+setx GOOGLE_CLOUD_TRANSLATE_API_KEY "キー"
+setx GEMINI_API_KEY "キー"
+```
+
+Gemini のモデルは設定画面で、APIから取れる一覧から選ぶか、モデル名を直接入力できます（既定は `gemini-3.8-flash`）。
+
+## 参考文献
+
+「参考文献も翻訳する」のチェックを外すと（既定）、参考文献リストの項目は原文のまま残ります。
+BabelDOC が翻訳に送る段落ごとに、著者名と発行年の書き出し、姓＋イニシャルの並び、DOI、番号つき（IEEE形式）などから
+参考文献かどうかを判定します（`paperapp/references.py`、確認用 `tests/test_references.py`）。
+
+## 翻訳エンジンを足すには
+
+`paperapp/registry.py` の `Engine` を継承したクラスを作り、`ENGINES` に加えます。翻訳APIなら `MTEngine` を継承し、
+`paperapp/mt_translators.py` に `HtmlMTTranslator` を継承した翻訳部品（`call_api` だけ書けばよい）を足します。
+BabelDOC が本文中の太字・数式に付ける目印は、最初から「訳さない」印つきのHTMLタグにしてあるので、HTML翻訳に対応したAPIならそのまま使えます。
 
 ## 用語集
 
-`glossary.csv` に `source,target` の形で訳語を書くと、その語を含む段落にだけ用語指定を付けて訳します（Gemini にも渡します）。
+`glossary.csv` に `source,target` の形で訳語を書くと、その語を含む段落にだけ用語指定を付けて訳します（PLaMo と Gemini。DeepL・Azure・Google には効きません）。
 
 ## コマンドで使う
 
@@ -54,8 +80,11 @@ PDF を `translate.bat` にドラッグ＆ドロップしても訳せます（2B
 - `app.py`: アプリの入口（pywebview の窓）。二重起動するとすでに開いているアプリを使います
 - `paperapp/server.py`: 画面・iPad共有用のHTTPサーバー、ライブラリ（`library/`）、翻訳ジョブの順番待ち
 - `paperapp/worker.py`: BabelDOC を別プロセスで動かし、進み具合を返す。1件も訳せなかったときは失敗として扱う
-- `paperapp/translators.py`: PLaMo 用（目標言語・常体・用語集、出力の上限と繰り返しの抑制）と Gemini 用の翻訳部品
-- `paperapp/engines.py`: エンジンの一覧と llama-server の起動・切り替え
+- `paperapp/registry.py`: 翻訳エンジンの一覧（名前・必要な環境変数・データの扱い・BabelDOC への組み込み方）
+- `paperapp/translators.py`: PLaMo 用・Gemini 用の翻訳部品と、参考文献を原文のまま残す仕組み
+- `paperapp/mt_translators.py`: DeepL / Azure / Google の翻訳部品
+- `paperapp/envkeys.py`: 環境変数（Windows では登録済みのユーザー環境変数も）からキーを読む
+- `paperapp/engines.py`: llama-server の起動・モデルの切り替え
 - `paperapp/reading.py`: 翻訳済みPDFから読書モード用の段落・見出し・図・数式を取り出す
 - `paperapp/static/`: 画面（HTML / CSS / JavaScript）
 

@@ -20,11 +20,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .config import LIBRARY_DIR, ROOT, SHARE_PORT, STATIC_DIR, load_settings, save_settings
-from .engines import LOCAL_MODELS, NO_WINDOW, LlamaManager, engine_label, engine_list
+from .engines import NO_WINDOW, LlamaManager
+from .envkeys import env_for_child, get_env
+from .registry import ENGINES as REGISTRY
+from .registry import PlamoEngine, engine_label, engine_list
 from .reading import write_reading
 
 ID_RE = re.compile(r"^[a-z0-9]{6,32}$")
-ENGINES = set(LOCAL_MODELS) | {"gemini"}
+ENGINES = set(REGISTRY)
 
 
 def stage_label(stage: str) -> str:
@@ -109,9 +112,11 @@ class Jobs:
         self.proc: subprocess.Popen | None = None
         threading.Thread(target=self._loop, daemon=True).start()
 
-    def submit(self, doc_id: str, engine: str) -> None:
+    def submit(self, doc_id: str, engine: str, translate_references: bool | None = None) -> None:
+        if translate_references is None:
+            translate_references = bool(load_settings().get("translate_references"))
         self.library.update_translation(doc_id, engine, status="queued", progress=0, stage="順番待ち",
-                                        error="", queued=time.time(),
+                                        error="", warning="", queued=time.time(), refs=translate_references,
                                         label=engine_label(engine, load_settings()))
         self.q.put((doc_id, engine))
 
@@ -126,7 +131,7 @@ class Jobs:
         for meta in self.library.list():
             for engine, tr in meta.get("translations", {}).items():
                 if tr.get("status") in ("queued", "running"):
-                    self.submit(meta["id"], engine)
+                    self.submit(meta["id"], engine, bool(tr.get("refs")))
 
     def _loop(self) -> None:
         while True:
@@ -155,13 +160,17 @@ class Jobs:
         started = time.time()
         lib.update_translation(doc_id, engine, status="running", progress=0, stage="準備中",
                                started=started, label=engine_label(engine, settings))
-        env = dict(os.environ, PYTHONIOENCODING="utf-8")
-        if engine in LOCAL_MODELS:
+        spec = REGISTRY[engine]
+        ok, why = spec.available(settings)
+        if not ok:
+            raise RuntimeError(why)
+        # API キーは環境変数のまま翻訳プロセスへ引き継ぐ（保存はしない）
+        env = env_for_child(spec.child_env_names())
+        env["PYTHONIOENCODING"] = "utf-8"
+        refs = bool(lib.meta(doc_id).get("translations", {}).get(engine, {}).get("refs"))
+        if isinstance(spec, PlamoEngine):
             lib.update_translation(doc_id, engine, stage="翻訳モデルを起動中")
             self.llama.ensure(engine)
-        elif engine == "gemini":
-            env["PAPERAPP_GEMINI_KEY"] = settings.get("gemini_api_key", "")
-            env["PAPERAPP_GEMINI_MODEL"] = settings.get("gemini_model", "gemini-2.5-flash")
         out = d / "out" / engine
         if out.exists():
             shutil.rmtree(out, ignore_errors=True)
@@ -171,7 +180,9 @@ class Jobs:
             py = py.with_name("python.exe")
         proc = subprocess.Popen(
             [str(py), "-m", "paperapp.worker", "--engine", engine,
-             "--input", str(d / "original.pdf"), "--outdir", str(out)],
+             "--input", str(d / "original.pdf"), "--outdir", str(out)]
+            + (["--translate-references"] if refs else [])
+            + (["--gemini-model", settings.get("gemini_model", "")] if engine == "gemini" else []),
             cwd=str(ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW,
         )
@@ -179,6 +190,7 @@ class Jobs:
         tail: list[str] = []
         error = ""
         warning = ""
+        skipped_refs = 0
         last_write = 0.0
         for line in proc.stdout:  # type: ignore[union-attr]
             line = line.rstrip()
@@ -195,6 +207,8 @@ class Jobs:
                     error = ev.get("error", "")
                 elif ev.get("event") == "warning":
                     warning = ev.get("warning", "")
+                elif ev.get("event") == "stats":
+                    skipped_refs = int(ev.get("skipped_refs") or 0)
             elif line.strip():
                 tail = (tail + [line])[-25:]
         proc.wait()
@@ -214,7 +228,7 @@ class Jobs:
             dual.replace(out / "dual.pdf")
         lib.update_translation(doc_id, engine, stage="読書モードを準備中", progress=99)
         data = write_reading(out / "translated.pdf", d / "original.pdf", out)
-        updates = {"status": "done", "progress": 100, "stage": "完了", "error": "", "warning": warning,
+        updates = {"status": "done", "progress": 100, "stage": "完了", "error": "", "warning": warning, "skipped_refs": skipped_refs,
                    "seconds": round(time.time() - started, 1)}
         meta = lib.meta(doc_id)
         if data.get("title") and meta.get("title_ja") is None:
@@ -343,7 +357,7 @@ def make_handler(app: App):
                     return self._json({
                         "engines": engine_list(s),
                         "settings": {"engine": s.get("engine"), "gemini_model": s.get("gemini_model"),
-                                     "has_gemini_key": bool(s.get("gemini_api_key"))},
+                                     "translate_references": bool(s.get("translate_references"))},
                         "share": app.share_info(),
                         "is_local": self.client_address[0] == "127.0.0.1",
                     })
@@ -361,7 +375,7 @@ def make_handler(app: App):
                     segno.make(info["url"], error="m").save(buf, kind="svg", scale=6, border=2)
                     return self._send(200, buf.getvalue(), "image/svg+xml")
                 if parts == ["gemini", "models"]:
-                    key = load_settings().get("gemini_api_key")
+                    key = get_env("GEMINI_API_KEY")
                     if not key:
                         return self._json([])
                     req = urllib.request.Request(
@@ -414,15 +428,17 @@ def make_handler(app: App):
                     data = self._body()
                     if not data.startswith(b"%PDF"):
                         return self._err(400, "PDFファイルではありません。")
+                    refs = (q.get("refs") or [""])[0]
                     doc_id = app.library.add(name, data)
-                    app.jobs.submit(doc_id, engine)
+                    app.jobs.submit(doc_id, engine, refs == "1" if refs else None)
                     return self._json({"id": doc_id})
                 if len(parts) == 3 and parts[0] == "doc" and parts[2] == "translate":
                     engine = (q.get("engine") or [""])[0]
                     if engine not in ENGINES:
                         return self._err(400, "エンジンが不明です")
                     app.library.meta(parts[1])
-                    app.jobs.submit(parts[1], engine)
+                    refs = (q.get("refs") or [""])[0]
+                    app.jobs.submit(parts[1], engine, refs == "1" if refs else None)
                     return self._json({"ok": True})
                 if len(parts) == 3 and parts[0] == "doc" and parts[2] == "delete":
                     for eng in ENGINES:
@@ -437,8 +453,12 @@ def make_handler(app: App):
                     return self._json({"ok": True})
                 if parts == ["settings"]:
                     body = json.loads(self._body(1024 * 64) or b"{}")
-                    allowed = {k: v for k, v in body.items() if k in ("engine", "gemini_api_key", "gemini_model")
+                    allowed = {k: v.strip()[:80] for k, v in body.items() if k in ("engine", "gemini_model")
                                and isinstance(v, str)}
+                    if "gemini_model" in allowed and not re.fullmatch(r"[\w.\-]+", allowed["gemini_model"]):
+                        return self._err(400, "モデル名に使えない文字が含まれています。")
+                    if isinstance(body.get("translate_references"), bool):
+                        allowed["translate_references"] = body["translate_references"]
                     save_settings(allowed)
                     return self._json({"ok": True})
                 if parts == ["share"]:

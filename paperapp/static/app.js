@@ -26,15 +26,27 @@ async function loadState() {
   state = await api("/state");
   document.querySelectorAll(".local-only").forEach((el) => el.classList.toggle("hidden", !state.is_local));
   const sel = $("#engineSel");
-  sel.innerHTML = state.engines.map((e) => '<option value="' + e.id + '"' + (e.available ? "" : " disabled") + ">" + esc(e.label) + "</option>").join("");
+  const opt = (e) => '<option value="' + e.id + '"' + (e.available ? "" : " disabled") + ">" + esc(e.label) + (e.available ? "" : "（未設定）") + "</option>";
+  sel.innerHTML = '<optgroup label="PC内で翻訳（外部に送らない）">' + state.engines.filter((e) => e.kind === "local").map(opt).join("") + "</optgroup>" +
+    '<optgroup label="クラウドで翻訳（本文を各社へ送る）">' + state.engines.filter((e) => e.kind !== "local").map(opt).join("") + "</optgroup>";
+  $("#refsChk").checked = !!state.settings.translate_references;
   const def = state.engines.find((e) => e.id === state.settings.engine && e.available) || state.engines.find((e) => e.available);
   if (def) sel.value = def.id;
   updateEngineNote();
 }
+function privacyBadge(e) {
+  if (e.kind === "local") return '<span class="badge ok">🔒 外部に送らない</span>';
+  if (e.no_training && !/Free/.test(e.label)) return '<span class="badge ok">✓ 学習に使われない</span>';
+  return '<span class="badge warn">⚠ 利用条件を確認</span>';
+}
 function updateEngineNote() {
   const e = state.engines.find((x) => x.id === $("#engineSel").value);
-  $("#engineNote").textContent = e ? e.note : "";
+  if (!e) { $("#engineNote").innerHTML = ""; return; }
+  $("#engineNote").innerHTML = privacyBadge(e) + " " + esc(e.privacy) +
+    (e.privacy_url ? ' <a href="' + esc(e.privacy_url) + '" target="_blank" rel="noopener">公式の説明</a>' : "");
 }
+$("#refsChk").addEventListener("change", () => api("/settings", {method: "POST", body: JSON.stringify({translate_references: $("#refsChk").checked})}).catch(() => {}));
+const refsParam = () => "&refs=" + ($("#refsChk").checked ? "1" : "0");
 $("#engineSel").addEventListener("change", () => { updateEngineNote(); api("/settings", {method: "POST", body: JSON.stringify({engine: $("#engineSel").value})}).catch(() => {}); });
 
 async function loadLibrary() {
@@ -54,7 +66,7 @@ function renderLibrary() {
     const trs = Object.entries(d.translations || {});
     const chips = trs.map(([eng, t]) => {
       const label = esc(t.label || eng);
-      if (t.status === "done") return '<span class="chip done" data-read="' + d.id + '" data-engine="' + eng + '">📖 ' + label + (t.seconds ? " · " + fmtSec(t.seconds) : "") + "</span>";
+      if (t.status === "done") return '<span class="chip done" data-read="' + d.id + '" data-engine="' + eng + '" title="' + (t.refs ? "参考文献も翻訳" : "参考文献は原文のまま" + (t.skipped_refs ? "（" + t.skipped_refs + "項目）" : "")) + '">📖 ' + label + (t.seconds ? " · " + fmtSec(t.seconds) : "") + (t.refs === false ? ' <small>参考文献は原文</small>' : "") + "</span>";
       if (t.status === "error") return '<span class="chip err" title="' + esc(t.error) + '">⚠ ' + label + " 失敗 <button data-retry=\"" + d.id + '" data-engine="' + eng + '">再試行</button></span>';
       if (t.status === "canceled") return '<span class="chip">' + label + ' · 中止 <button data-retry="' + d.id + '" data-engine="' + eng + '">やり直す</button></span>';
       return '<span class="chip">' + label + " · " + esc(t.stage || "") + ' <span class="bar-mini"><i style="width:' + (t.progress || 0) + '%"></i></span> ' + Math.round(t.progress || 0) + '% <button data-cancel="' + d.id + '" data-engine="' + eng + '" title="中止">×</button></span>';
@@ -76,7 +88,7 @@ $("#library").addEventListener("click", async (ev) => {
     if (t.dataset.read) openReader(t.dataset.read, t.dataset.engine);
     else if (t.dataset.cancel) { await api("/doc/" + t.dataset.cancel + "/cancel?engine=" + t.dataset.engine, {method: "POST"}); loadLibrary(); }
     else if (t.dataset.retry) { await api("/doc/" + t.dataset.retry + "/translate?engine=" + t.dataset.engine, {method: "POST"}); loadLibrary(); }
-    else if (t.dataset.more) { const eng = document.querySelector('[data-eng-for="' + t.dataset.more + '"]').value; await api("/doc/" + t.dataset.more + "/translate?engine=" + eng, {method: "POST"}); loadLibrary(); }
+    else if (t.dataset.more) { const eng = document.querySelector('[data-eng-for="' + t.dataset.more + '"]').value; await api("/doc/" + t.dataset.more + "/translate?engine=" + eng + refsParam(), {method: "POST"}); loadLibrary(); }
     else if (t.dataset.del) { if (confirm("この論文と翻訳結果を削除しますか？")) { await api("/doc/" + t.dataset.del + "/delete", {method: "POST"}); loadLibrary(); } }
   } catch (e) { toast(e.message); }
 });
@@ -86,7 +98,7 @@ async function uploadFiles(files) {
   for (const f of files) {
     if (!/\.pdf$/i.test(f.name) && f.type !== "application/pdf") { toast(f.name + " はPDFではありません"); continue; }
     try {
-      await api("/translate?engine=" + encodeURIComponent(engine) + "&name=" + encodeURIComponent(f.name), {method: "POST", body: f, headers: {"Content-Type": "application/pdf"}});
+      await api("/translate?engine=" + encodeURIComponent(engine) + "&name=" + encodeURIComponent(f.name) + refsParam(), {method: "POST", body: f, headers: {"Content-Type": "application/pdf"}});
     } catch (e) { toast(e.message); }
   }
   loadLibrary();
@@ -103,28 +115,31 @@ function closeModal() { $("#modal").classList.add("hidden"); }
 $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal" || e.target.dataset.close !== undefined) closeModal(); });
 
 $("#btnSettings").addEventListener("click", async () => {
+  await loadState();
   const s = state.settings;
-  modal('<h3>設定</h3>' +
-    '<label>Gemini APIキー ' + (s.has_gemini_key ? "（登録済み）" : "") + '</label><input type="password" id="gKey" placeholder="' + (s.has_gemini_key ? "変更するときだけ入力" : "AIza... を貼り付け") + '" autocomplete="off">' +
-    '<label>Geminiのモデル</label><select id="gModel"><option>' + esc(s.gemini_model) + "</option></select>" +
-    '<p class="note">キーはこのPCの中（%APPDATA%\\PLaMoPaperReader）だけに保存されます。Geminiを選ぶと論文の本文がGoogleに送られます。無料枠では送った内容がGoogleの品質改善に使われることがあります。</p>' +
-    '<div class="modal-actions">' + (s.has_gemini_key ? '<button id="gDel">キーを削除</button>' : "") + '<span class="grow"></span><button data-close>閉じる</button><button class="primary" id="gSave">保存</button></div>');
-  if (s.has_gemini_key) {
+  const rows = state.engines.map((e) => {
+    const envs = e.env.map((v) => '<code class="' + (v.set ? "set" : v.required ? "unset" : "opt") + '">' + esc(v.name) + (v.set ? " ✓" : v.required ? " 未設定" : "（任意）") + "</code>").join(" ");
+    return '<div class="eng-row"><div class="eng-head"><b>' + esc(e.label) + "</b> " + privacyBadge(e) +
+      '<span class="grow"></span><span class="' + (e.available ? "st ok" : "st") + '">' + (e.available ? "使えます" : "未設定") + "</span></div>" +
+      '<div class="eng-priv">' + esc(e.privacy) + (e.privacy_url ? ' <a href="' + esc(e.privacy_url) + '" target="_blank" rel="noopener">公式の説明</a>' : "") + "</div>" +
+      (envs ? '<div class="eng-env">' + envs + "</div>" : "") + "</div>";
+  }).join("");
+  const gem = state.engines.find((e) => e.id === "gemini");
+  modal('<h3>翻訳エンジンとデータの扱い</h3>' + rows +
+    '<p class="note">APIキーは環境変数で渡します（このアプリには保存しません）。PowerShellで次のように設定し、この画面を開き直すと反映されます。<br><code>setx DEEPL_API_KEY "キー"</code></p>' +
+    '<label for="gModel">Geminiのモデル（一覧から選ぶか、モデル名を直接入力）</label><input type="text" id="gModel" list="gModels" value="' + esc(s.gemini_model) + '" autocomplete="off" spellcheck="false"><datalist id="gModels"></datalist>' +
+    '<div class="modal-actions"><span class="grow"></span><button data-close>閉じる</button><button class="primary" id="gSave">保存</button></div>');
+  if (gem && gem.available) {
     api("/gemini/models").then((list) => {
-      if (!list.length) return;
-      const cur = s.gemini_model;
-      $("#gModel").innerHTML = [...new Set([cur, ...list])].map((m) => "<option" + (m === cur ? " selected" : "") + ">" + esc(m) + "</option>").join("");
-    }).catch((e) => toast("モデル一覧を取得できませんでした: " + e.message));
+      $("#gModels").innerHTML = list.map((m) => '<option value="' + esc(m) + '">').join("");
+    }).catch((e) => toast("Geminiのモデル一覧を取得できませんでした: " + e.message));
   }
   $("#gSave").onclick = async () => {
-    const body = {gemini_model: $("#gModel").value};
-    const k = $("#gKey").value.trim();
-    if (k) body.gemini_api_key = k;
-    await api("/settings", {method: "POST", body: JSON.stringify(body)});
-    closeModal(); await loadState(); toast("保存しました");
+    try {
+      await api("/settings", {method: "POST", body: JSON.stringify({gemini_model: $("#gModel").value.trim()})});
+      closeModal(); await loadState(); toast("保存しました");
+    } catch (e) { toast(e.message); }
   };
-  const del = $("#gDel");
-  if (del) del.onclick = async () => { await api("/settings", {method: "POST", body: JSON.stringify({gemini_api_key: ""})}); closeModal(); await loadState(); toast("キーを削除しました"); };
 });
 
 async function showShare() {

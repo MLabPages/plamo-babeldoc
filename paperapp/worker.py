@@ -7,14 +7,16 @@ import contextlib
 import json
 import os
 import sys
+from pathlib import Path
 
 from . import bdenv  # noqa: F401
-from .config import GLOSSARY_FILE, LLAMA_URL
-from .engines import GEMINI_BASE_URL, LOCAL_MODELS
+from .config import load_settings
+from .registry import ENGINES
 
 
 def emit(**kw) -> None:
-    print("@@" + json.dumps(kw, ensure_ascii=False), flush=True)
+    # BabelDOC のログが改行せずに終わることがあるので、先頭で改行して行頭から出す
+    print("\n@@" + json.dumps(kw, ensure_ascii=False), flush=True)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -23,11 +25,23 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--input", required=True)
     p.add_argument("--outdir", required=True)
     p.add_argument("--pages")
+    p.add_argument("--translate-references", action="store_true")
+    p.add_argument("--gemini-model")
     a = p.parse_args(argv)
 
-    import babeldoc.main as bmain
+    engine = ENGINES.get(a.engine)
+    if engine is None:
+        emit(event="error", error=f"不明なエンジン: {a.engine}")
+        sys.exit(2)
+    settings = load_settings()
+    if a.gemini_model:
+        settings["gemini_model"] = a.gemini_model
+    ok, why = engine.available(settings)
+    if not ok:
+        emit(event="error", error=why)
+        sys.exit(2)
 
-    from .translators import GeminiTranslator, PlamoTranslator
+    import babeldoc.main as bmain
 
     def make_handler(config, show_log=False):
         last = {"v": -1.0}
@@ -47,48 +61,28 @@ def main(argv: list[str] | None = None) -> None:
         return contextlib.nullcontext(), handler
 
     bmain.create_progress_handler = make_handler
-
-    if a.engine in LOCAL_MODELS:
-        bmain.OpenAITranslator = PlamoTranslator
-        args = ["--openai", "--openai-model", LOCAL_MODELS[a.engine]["alias"],
-                "--openai-base-url", f"{LLAMA_URL}/v1", "--openai-api-key", "local",
-                "--no-auto-extract-glossary", "--qps", "4", "--pool-max-workers", "4"]
-    elif a.engine == "gemini":
-        key = os.environ.get("PAPERAPP_GEMINI_KEY", "")
-        model = os.environ.get("PAPERAPP_GEMINI_MODEL", "gemini-2.5-flash")
-        if not key:
-            emit(event="error", error="GeminiのAPIキーが登録されていません。")
-            sys.exit(2)
-        bmain.OpenAITranslator = GeminiTranslator
-        base_url = os.environ.get("PAPERAPP_GEMINI_BASE_URL", GEMINI_BASE_URL)  # 試験用に差し替え可能
-        args = ["--openai", "--openai-model", model, "--openai-base-url", base_url,
-                "--openai-api-key", key, "--qps", "4", "--pool-max-workers", "4"]
-        if GLOSSARY_FILE.exists():
-            args += ["--glossary-files", str(GLOSSARY_FILE)]
-    else:
-        emit(event="error", error=f"不明なエンジン: {a.engine}")
-        sys.exit(2)
-
+    args = engine.configure(bmain, settings, a.translate_references)
     common = ["--lang-in", "en", "--lang-out", "ja", "--output", a.outdir, "--no-watermark"]
     if a.pages:
         common += ["--pages", a.pages]
+    if os.environ.get("PAPERAPP_IGNORE_CACHE") == "1":  # 試験用
+        common.append("--ignore-cache")
     sys.argv = ["babeldoc", *args, *common, "--files", a.input]
     bmain.cli()
 
     from .translators import STATS
 
-    from pathlib import Path
-
     if STATS["ok"] == 0 and STATS["fail"] > 0:
         for f in Path(a.outdir).glob("*.pdf"):
             f.unlink(missing_ok=True)
         msg = STATS["last_error"]
-        if any(x in msg for x in ("API key", "400", "401", "403", "PERMISSION", "Authentication")):
-            msg = "APIキーまたはモデル名が正しくない可能性があります。設定を確認してください。（" + msg[:160] + "）"
+        if any(x in msg for x in ("API key", "400", "401", "403", "456", "PERMISSION", "Authentication", "Unauthorized")):
+            msg = "APIキー・モデル名・利用枠のいずれかに問題がある可能性があります。（" + msg[:180] + "）"
         elif "Connection" in msg:
-            msg = "翻訳サーバーに接続できませんでした。（" + msg[:160] + "）"
+            msg = "翻訳サービスに接続できませんでした。（" + msg[:180] + "）"
         emit(event="error", error="翻訳できませんでした: " + msg)
         sys.exit(1)
+    emit(event="stats", skipped_refs=STATS["skipped_refs"], ok=STATS["ok"], fail=STATS["fail"])
     if STATS["fail"]:
         emit(event="warning", warning=f"{STATS['fail']}か所の翻訳に失敗し、原文のまま残っています。")
 

@@ -22,8 +22,8 @@ SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 
 DEFAULT_SETTINGS = {
     "engine": "plamo-2b",
-    "gemini_api_key": "",
-    "gemini_model": "gemini-2.5-flash",
+    "gemini_model": "gemini-3.8-flash",
+    "translate_references": False,
     "share_token": "",
 }
 
@@ -38,9 +38,22 @@ def load_settings() -> dict:
                 data.update(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")))
             except (OSError, ValueError):
                 pass
+        changed = False
+        if "gemini_api_key" in data:
+            # API キーは環境変数で渡す方式に変えたため、以前の保存分は消す
+            data.pop("gemini_api_key", None)
+            changed = True
+        if data.get("gemini_model") == "gemini-2.5-flash":
+            data["gemini_model"] = DEFAULT_SETTINGS["gemini_model"]
+            changed = True
         if not data.get("share_token"):
             data["share_token"] = secrets.token_urlsafe(18)
-            _write(data)
+            changed = True
+        if changed:
+            try:
+                _write(data)
+            except OSError:
+                pass  # 書き込めなくても読み込んだ値で続ける
         return data
 
 

@@ -9,57 +9,7 @@ import urllib.request
 
 from .config import LLAMA_EXE, LLAMA_PORT, LLAMA_URL, MODELS_DIR, ROOT
 
-LOCAL_MODELS = {
-    "plamo-0.8b": {
-        "label": "PLaMo 0.8B（最速）",
-        "file": "plamo-3-translate-0.8b-Q4_K_M.gguf",
-        "alias": "plamo-3-translate-0.8b",
-    },
-    "plamo-2b": {
-        "label": "PLaMo 2B（標準）",
-        "file": "plamo-3-translate-2b-Q4_K_M.gguf",
-        "alias": "plamo-3-translate-2b",
-    },
-    "plamo-8b": {
-        "label": "PLaMo 8B（高品質・遅め）",
-        "file": "plamo-3-translate-8b-Q4_K_M.gguf",
-        "alias": "plamo-3-translate-8b",
-    },
-}
-GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
-
-def engine_label(engine: str, settings: dict | None = None) -> str:
-    if engine in LOCAL_MODELS:
-        return LOCAL_MODELS[engine]["label"]
-    if engine == "gemini":
-        model = (settings or {}).get("gemini_model") or "Gemini"
-        return f"Gemini（{model}）"
-    return engine
-
-
-def engine_list(settings: dict) -> list[dict]:
-    items = []
-    for key, info in LOCAL_MODELS.items():
-        ok = (MODELS_DIR / info["file"]).exists()
-        items.append({
-            "id": key,
-            "label": info["label"],
-            "kind": "local",
-            "available": ok,
-            "note": "PC内で翻訳します。論文は外部に送られません。" if ok else "モデルファイルがありません。",
-        })
-    has_key = bool(settings.get("gemini_api_key"))
-    items.append({
-        "id": "gemini",
-        "label": engine_label("gemini", settings),
-        "kind": "cloud",
-        "available": has_key,
-        "note": "論文の本文をGoogleのGemini APIへ送って翻訳します。"
-        if has_key else "設定でGeminiのAPIキーを登録すると使えます。",
-    })
-    return items
 
 
 def _get_json(url: str, timeout: float = 2.0):
@@ -82,7 +32,10 @@ class LlamaManager:
             return None
 
     def ensure(self, engine: str) -> None:
-        info = LOCAL_MODELS[engine]
+        from .registry import ENGINES
+
+        spec = ENGINES[engine]
+        info = {"file": spec.file, "alias": spec.alias}
         with self.lock:
             current = self.current_alias()
             if current == info["alias"]:
