@@ -4,6 +4,7 @@ home/
 llama/
 models/
 output/
+library/
 qa/
 *.log
 __pycache__/
