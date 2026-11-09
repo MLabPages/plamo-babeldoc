@@ -1,0 +1,9 @@
+.venv/
+.uv-cache/
+home/
+llama/
+models/
+output/
+qa/
+*.log
+__pycache__/
