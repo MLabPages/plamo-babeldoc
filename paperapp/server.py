@@ -105,6 +105,8 @@ class Jobs:
         self.library = library
         self.llama = llama
         self.q: queue.Queue = queue.Queue()
+        self.current: tuple[str, str] | None = None
+        self.proc: subprocess.Popen | None = None
         threading.Thread(target=self._loop, daemon=True).start()
 
     def submit(self, doc_id: str, engine: str) -> None:
@@ -112,6 +114,13 @@ class Jobs:
                                         error="", queued=time.time(),
                                         label=engine_label(engine, load_settings()))
         self.q.put((doc_id, engine))
+
+    def cancel(self, doc_id: str, engine: str) -> None:
+        tr = self.library.meta(doc_id).get("translations", {}).get(engine, {})
+        if tr.get("status") in ("queued", "running"):
+            self.library.update_translation(doc_id, engine, status="canceled", stage="中止しました")
+        if self.current == (doc_id, engine) and self.proc and self.proc.poll() is None:
+            self.proc.kill()
 
     def recover(self) -> None:
         for meta in self.library.list():
@@ -123,12 +132,19 @@ class Jobs:
         while True:
             doc_id, engine = self.q.get()
             try:
+                tr = self.library.meta(doc_id).get("translations", {}).get(engine, {})
+                if tr.get("status") != "queued":
+                    continue  # 中止された
+                self.current = (doc_id, engine)
                 self._run(doc_id, engine)
             except Exception as e:  # noqa: BLE001
                 try:
                     self.library.update_translation(doc_id, engine, status="error", error=str(e))
                 except KeyError:
                     pass
+            finally:
+                self.current = None
+                self.proc = None
 
     def _run(self, doc_id: str, engine: str) -> None:
         lib = self.library
@@ -159,6 +175,7 @@ class Jobs:
             cwd=str(ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW,
         )
+        self.proc = proc
         tail: list[str] = []
         error = ""
         warning = ""
@@ -181,6 +198,9 @@ class Jobs:
             elif line.strip():
                 tail = (tail + [line])[-25:]
         proc.wait()
+        if lib.meta(doc_id).get("translations", {}).get(engine, {}).get("status") == "canceled":
+            shutil.rmtree(out, ignore_errors=True)
+            return
         log = out / "worker.log"
         log.write_text("\n".join(tail), encoding="utf-8")
         mono = next(iter(sorted(out.glob("*.mono.pdf"))), None)
@@ -405,7 +425,15 @@ def make_handler(app: App):
                     app.jobs.submit(parts[1], engine)
                     return self._json({"ok": True})
                 if len(parts) == 3 and parts[0] == "doc" and parts[2] == "delete":
+                    for eng in ENGINES:
+                        app.jobs.cancel(parts[1], eng) if (app.library.doc_dir(parts[1]) / "meta.json").exists() else None
                     app.library.delete(parts[1])
+                    return self._json({"ok": True})
+                if len(parts) == 3 and parts[0] == "doc" and parts[2] == "cancel":
+                    engine = (q.get("engine") or [""])[0]
+                    if engine not in ENGINES:
+                        return self._err(400, "エンジンが不明です")
+                    app.jobs.cancel(parts[1], engine)
                     return self._json({"ok": True})
                 if parts == ["settings"]:
                     body = json.loads(self._body(1024 * 64) or b"{}")

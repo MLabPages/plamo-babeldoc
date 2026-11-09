@@ -56,7 +56,8 @@ function renderLibrary() {
       const label = esc(t.label || eng);
       if (t.status === "done") return '<span class="chip done" data-read="' + d.id + '" data-engine="' + eng + '">📖 ' + label + (t.seconds ? " · " + fmtSec(t.seconds) : "") + "</span>";
       if (t.status === "error") return '<span class="chip err" title="' + esc(t.error) + '">⚠ ' + label + " 失敗 <button data-retry=\"" + d.id + '" data-engine="' + eng + '">再試行</button></span>';
-      return '<span class="chip">' + label + " · " + esc(t.stage || "") + ' <span class="bar-mini"><i style="width:' + (t.progress || 0) + '%"></i></span> ' + Math.round(t.progress || 0) + "%</span>";
+      if (t.status === "canceled") return '<span class="chip">' + label + ' · 中止 <button data-retry="' + d.id + '" data-engine="' + eng + '">やり直す</button></span>';
+      return '<span class="chip">' + label + " · " + esc(t.stage || "") + ' <span class="bar-mini"><i style="width:' + (t.progress || 0) + '%"></i></span> ' + Math.round(t.progress || 0) + '% <button data-cancel="' + d.id + '" data-engine="' + eng + '" title="中止">×</button></span>';
     }).join("");
     const errs = trs.filter(([, t]) => t.status === "error" || (t.status === "done" && t.warning)).map(([, t]) => '<div class="note">⚠ ' + esc(t.label || "") + "：" + esc(t.error || t.warning) + "</div>").join("");
     const opts = engineOptions(trs.map(([e]) => e));
@@ -69,10 +70,11 @@ function renderLibrary() {
   }).join("");
 }
 $("#library").addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-read],[data-retry],[data-more],[data-del]");
+  const t = ev.target.closest("[data-read],[data-retry],[data-more],[data-del],[data-cancel]");
   if (!t) return;
   try {
     if (t.dataset.read) openReader(t.dataset.read, t.dataset.engine);
+    else if (t.dataset.cancel) { await api("/doc/" + t.dataset.cancel + "/cancel?engine=" + t.dataset.engine, {method: "POST"}); loadLibrary(); }
     else if (t.dataset.retry) { await api("/doc/" + t.dataset.retry + "/translate?engine=" + t.dataset.engine, {method: "POST"}); loadLibrary(); }
     else if (t.dataset.more) { const eng = document.querySelector('[data-eng-for="' + t.dataset.more + '"]').value; await api("/doc/" + t.dataset.more + "/translate?engine=" + eng, {method: "POST"}); loadLibrary(); }
     else if (t.dataset.del) { if (confirm("この論文と翻訳結果を削除しますか？")) { await api("/doc/" + t.dataset.del + "/delete", {method: "POST"}); loadLibrary(); } }

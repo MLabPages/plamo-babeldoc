@@ -18,7 +18,7 @@ CONTINUATION = set("をのにがはでともるれりたっゃゅょァィゥェ
 def _join(parts: list[str]) -> str:
     out = ""
     for s in parts:
-        s = s.strip()
+        s = s.replace("\u00a0", " ").replace("\u202f", " ").replace("\u2009", " ").strip()
         if not s:
             continue
         if not out:
