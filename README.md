@@ -11,6 +11,12 @@ Preferred Networks の **PLaMo 3 Translate**（0.8B / 2B / 8B）か、Google の
 - ショートカットを作り直すとき: `powershell -ExecutionPolicy Bypass -File tools\make_shortcuts.ps1`
 - ブラウザで開くとき: `.venv\Scripts\python.exe app.py --browser`
 
+### タスクバーに固定
+
+スタートメニューで「PLaMo論文リーダー」を右クリックし、「詳細」→「タスクバーにピン留めする」を選びます。
+論文と「訳」の専用アイコンで表示します。最小化している間も翻訳やiPad共有は続きます。
+ウィンドウを閉じるとアプリは終了します。Windowsへのログイン時に自動起動する設定ではありません。
+
 ## できること
 
 - **翻訳**: PDFをドロップするかボタンで選ぶと翻訳が始まります。同じ論文を別のエンジンでも訳して見比べられます。

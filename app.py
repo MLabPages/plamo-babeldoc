@@ -10,6 +10,7 @@ import socket
 import sys
 import threading
 import webbrowser
+import ctypes
 
 import json
 import urllib.request
@@ -59,6 +60,9 @@ def running_instance(token: str) -> str | None:
 
 
 def main() -> None:
+    if sys.platform == "win32":
+        # Use the same identity as the Start-menu shortcut, independently of Python.
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PLaMo.PaperReader.Desktop")
     token = load_settings()["share_token"]
     url = running_instance(token)
     app = None
