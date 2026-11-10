@@ -13,7 +13,7 @@ CAPTION_RE = re.compile(r"^(図|表)\s*[\d０-９]+\s*[.．:：\s　]|^(Figure|F
 MATH_RE = re.compile(r"[\U0001D400-\U0001D7FF∑∫√≈≤≥±×÷∂∆∇]")
 JP_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 CONTINUATION = set("をのにがはでともるれりたっゃゅょァィゥェォッャュョーぁぃぅぇぉ、")
-READING_VERSION = 2
+READING_VERSION = 3
 NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+[^\d\W]", re.UNICODE)
 LETTERED_HEADING = re.compile(r"^([IVX]{1,5}|[A-H])\.\s+[A-Z]")
 
@@ -113,9 +113,16 @@ def _source_layout(doc: pymupdf.Document) -> list[list[dict]]:
         merged: list[dict] = []
         for info in infos:
             prev = merged[-1] if merged else None
-            if (prev is not None and not toc and info["size"] >= median * 1.18
+            gap = info["rect"].y0 - prev["rect"].y1 if prev is not None else 0
+            large = info["size"] >= median * 1.18 and 0 <= gap < info["size"] * 2
+            # A colored/bold heading wrapped into one block per line, e.g. "The future lies in
+            # specialized models" + "for specific tasks".
+            wrapped_heading = (prev is not None and (info["bold"] or info["colored"])
+                               and prev["colored"] == info["colored"] and info["size"] >= median * .97
+                               and len(_join(prev["lines"] + info["lines"])) <= 90
+                               and -info["size"] < gap < info["size"] * .6)
+            if (prev is not None and not toc and (large or wrapped_heading)
                     and abs(prev["size"] - info["size"]) < .5 and prev["bold"] == info["bold"]
-                    and 0 <= info["rect"].y0 - prev["rect"].y1 < info["size"] * 2
                     and not (info["rect"].x1 < prev["rect"].x0 or info["rect"].x0 > prev["rect"].x1)
                     and not _join(prev["lines"]).endswith(TERMINAL)):
                 prev["lines"] += info["lines"]  # pull quotes and sidebar titles split into one block per line
@@ -164,9 +171,15 @@ def _source_layout(doc: pymupdf.Document) -> list[list[dict]]:
                                 source_heading=text)
                 elif (not toc and len(text) <= 90 and len(info["lines"]) <= 2 and not text.endswith(TERMINAL)
                       and not table_row and sum(c.isalpha() for c in text) >= 4
-                      and (info["bold"] or info["colored"] or info["size"] >= median * 1.18)):
+                      # Bold/colored text smaller than body text is a label in a figure,
+                      # sidebar or author box, not a section heading.
+                      and (info["size"] >= median * 1.18
+                           or ((info["bold"] or info["colored"]) and info["size"] >= median * .97))):
                     info.update(role="heading", level=2 if info["size"] >= median * 1.18 else 3,
                                 source_heading=text)
+                elif (not toc and (info["bold"] or info["colored"]) and info["size"] < median * .97
+                      and len(text) <= 60 and len(info["lines"]) <= 3):
+                    info["role"] = "label"  # small label inside a figure, sidebar or author box
         if pno == 0 and not any(i["role"] == "title" for i in infos):
             candidates = [i for i in infos if i["role"] != "noise" and len(i["text"]) > 25
                           and i["rect"].y0 < page.rect.height * .40]
@@ -472,6 +485,8 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                 kind = "h2" if info.get("level", 2) <= 2 else "h3"
             elif info.get("role") == "note":
                 kind = "note"
+            elif info.get("role") == "label":
+                kind = "label"
             elif not sources and short and NUMBERED_HEADING.match(text) and (info["bold"] or info["italic"]):
                 kind = "h2"
             else:

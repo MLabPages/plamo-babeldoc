@@ -217,7 +217,7 @@ function renderArticle(data) {
       continue;
     }
     const tag = it.t === "h2" ? "h2" : it.t === "h3" ? "h3" : "p";
-    const cls = it.t === "cap" ? ' class="cap"' : it.t === "note" ? ' class="cap note"' : "";
+    const cls = it.t === "cap" ? ' class="cap"' : it.t === "note" || it.t === "label" ? ' class="cap ' + it.t + '"' : "";
     html += "<" + tag + cls + ' data-i="' + (n++) + '">' + esc(it.text) + "</" + tag + ">";
     if (it.orig && tag === "p") html += '<div class="orig">' + esc(it.orig) + "</div>";
   }
