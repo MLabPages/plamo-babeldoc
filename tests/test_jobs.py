@@ -132,6 +132,44 @@ class JobTests(unittest.TestCase):
         self.assertTrue(self.translation()["refs"])
         self.assertEqual(self.translation()["status"], "queued")
 
+    def test_briefly_locked_meta_file_is_retried(self):
+        real = server.replace_file.__globals__["os"].replace
+        calls = {"n": 0}
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] <= 2:  # Windows refuses while another reader has meta.json open
+                raise PermissionError(5, "Access is denied")
+            real(src, dst)
+
+        with patch.object(server.replace_file.__globals__["os"], "replace", side_effect=flaky):
+            self.lib.update_translation(self.doc_id, self.engine, status="done")
+        self.assertEqual(self.translation()["status"], "done")
+        self.assertEqual(calls["n"], 3)
+
+    def test_progress_write_failure_does_not_abort_translation(self):
+        item = self.queued()
+        real_update = self.lib.update_translation
+
+        def update(doc_id, engine, **kw):
+            if "progress" in kw and kw.get("progress") == 50:
+                raise PermissionError(5, "Access is denied")
+            real_update(doc_id, engine, **kw)
+
+        with patch.object(self.lib, "update_translation", side_effect=update):
+            self.run_job(item, lines='@@{"event":"progress","progress":50,"stage":"translate"}\n')
+        self.assertEqual(self.translation()["status"], "done")
+
+    def test_worker_is_killed_when_job_fails_unexpectedly(self):
+        item = self.queued()
+        proc = Mock(returncode=None, poll=Mock(return_value=None))
+        proc.stdout = Mock(__iter__=Mock(side_effect=RuntimeError("broken pipe")))
+        with patch.object(server.REGISTRY[self.engine], "available", return_value=(True, "")), \
+             patch.object(server.subprocess, "Popen", return_value=proc):
+            with self.assertRaises(RuntimeError):
+                self.jobs._run(*item)
+        proc.kill.assert_called_once()
+
     def test_invalid_pdf_leaves_no_library_entry(self):
         before = set(self.root.iterdir())
         with self.assertRaisesRegex(ValueError, "PDFを読み込めません"):

@@ -19,7 +19,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .config import LIBRARY_DIR, ROOT, SHARE_PORT, STATIC_DIR, load_settings, save_settings
+from .config import LIBRARY_DIR, ROOT, SHARE_PORT, STATIC_DIR, load_settings, replace_file, save_settings
 from .engines import NO_WINDOW, LlamaManager
 from .envkeys import env_for_child, get_env
 from .registry import ENGINES as REGISTRY
@@ -71,7 +71,7 @@ class Library:
         p = self.doc_dir(doc_id) / "meta.json"
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(p)
+        replace_file(tmp, p)
 
     def update_translation(self, doc_id: str, engine: str, **kw) -> None:
         with self.lock:
@@ -236,25 +236,33 @@ class Jobs:
         warning = ""
         skipped_refs = 0
         last_write = 0.0
-        for line in proc.stdout:  # type: ignore[union-attr]
-            line = line.rstrip()
-            if line.startswith("@@"):
-                try:
-                    ev = json.loads(line[2:])
-                except ValueError:
-                    continue
-                if ev.get("event") == "progress" and time.time() - last_write > 0.7:
-                    last_write = time.time()
-                    update(progress=ev.get("progress", 0), stage=stage_label(ev.get("stage", "")))
-                elif ev.get("event") == "error":
-                    error = ev.get("error", "")
-                elif ev.get("event") == "warning":
-                    warning = ev.get("warning", "")
-                elif ev.get("event") == "stats":
-                    skipped_refs = int(ev.get("skipped_refs") or 0)
-            elif line.strip():
-                tail = (tail + [line])[-25:]
-        proc.wait()
+        try:
+            for line in proc.stdout:  # type: ignore[union-attr]
+                line = line.rstrip()
+                if line.startswith("@@"):
+                    try:
+                        ev = json.loads(line[2:])
+                    except ValueError:
+                        continue
+                    if ev.get("event") == "progress" and time.time() - last_write > 0.7:
+                        last_write = time.time()
+                        try:
+                            update(progress=ev.get("progress", 0), stage=stage_label(ev.get("stage", "")))
+                        except OSError:
+                            pass  # 進み具合の表示だけなので、書けなくても翻訳は続ける
+                    elif ev.get("event") == "error":
+                        error = ev.get("error", "")
+                    elif ev.get("event") == "warning":
+                        warning = ev.get("warning", "")
+                    elif ev.get("event") == "stats":
+                        skipped_refs = int(ev.get("skipped_refs") or 0)
+                elif line.strip():
+                    tail = (tail + [line])[-25:]
+            proc.wait()
+        except BaseException:
+            if proc.poll() is None:  # 翻訳プロセスを残したままにしない
+                proc.kill()
+            raise
         if not self._active(doc_id, engine, job_id):
             shutil.rmtree(out, ignore_errors=True)
             return
@@ -265,10 +273,10 @@ class Jobs:
             msg = error or next((t for t in reversed(tail) if "Error" in t or "error" in t), "") or "翻訳に失敗しました。"
             update(status="error", error=msg[-400:])
             return
-        mono.replace(out / "translated.pdf")
+        replace_file(mono, out / "translated.pdf")
         dual = next(iter(sorted(out.glob("*.dual.pdf"))), None)
         if dual:
-            dual.replace(out / "dual.pdf")
+            replace_file(dual, out / "dual.pdf")
         if not update(stage="読書モードを準備中", progress=99):
             return
         data = write_reading(out / "translated.pdf", d / "original.pdf", out)

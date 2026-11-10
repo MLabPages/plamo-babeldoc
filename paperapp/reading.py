@@ -694,5 +694,7 @@ def write_reading(mono_pdf: Path, original_pdf: Path, out_dir: Path) -> dict:
         write_outline(out_dir / "dual.pdf", mono_pdf, data)
     tmp = out_dir / "reading.tmp.json"
     tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(out_dir / "reading.json")
+    from .config import replace_file
+
+    replace_file(tmp, out_dir / "reading.json")
     return data

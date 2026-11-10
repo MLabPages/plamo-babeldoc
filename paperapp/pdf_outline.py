@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pymupdf
 
+from .config import replace_file
 from .reading import _key
 
 
@@ -36,6 +37,6 @@ def write_outline(pdf: Path, mono_pdf: Path, data: dict) -> None:
             doc.set_toc(toc, collapse=0)
             doc.set_pagemode("UseOutlines")
             doc.save(tmp, garbage=3, deflate=True)
-        tmp.replace(pdf)
+        replace_file(tmp, pdf)
     finally:
         tmp.unlink(missing_ok=True)

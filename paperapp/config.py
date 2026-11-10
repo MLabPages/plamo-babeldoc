@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -69,4 +70,23 @@ def _write(data: dict) -> None:
     SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
     tmp = SETTINGS_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(SETTINGS_FILE)
+    replace_file(tmp, SETTINGS_FILE)
+
+
+def replace_file(src: Path, dst: Path, timeout: float = 2.0) -> None:
+    """Atomically replace dst with src.
+
+    On Windows the replacement is refused while another reader (the library screen polling
+    meta.json, an indexer or antivirus) has the file open, so retry briefly.
+    """
+    deadline = time.monotonic() + timeout
+    delay = .02
+    while True:
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, .2)
