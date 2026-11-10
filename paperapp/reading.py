@@ -13,7 +13,7 @@ CAPTION_RE = re.compile(r"^(図|表)\s*[\d０-９]+\s*[.．:：\s　]|^(Figure|F
 MATH_RE = re.compile(r"[\U0001D400-\U0001D7FF∑∫√≈≤≥±×÷∂∆∇]")
 JP_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 CONTINUATION = set("をのにがはでともるれりたっゃゅょァィゥェォッャュョーぁぃぅぇぉ、")
-READING_VERSION = 3
+READING_VERSION = 4
 NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+[^\d\W]", re.UNICODE)
 LETTERED_HEADING = re.compile(r"^([IVX]{1,5}|[A-H])\.\s+[A-Z]")
 
@@ -352,6 +352,24 @@ def _figure_rects(page: pymupdf.Page, blocks: list[dict]) -> list[tuple[pymupdf.
     return out
 
 
+FIGURE_MARK = re.compile(r"^(FIGURE|Figure|Fig\.?|EXHIBIT|Exhibit)\s*\d")
+
+
+def _panels(page: pymupdf.Page) -> list[pymupdf.Rect]:
+    """Boxed infographics: a large drawn panel whose figure label sits inside it."""
+    area = page.rect.get_area()
+    marks = [pymupdf.Rect(b[:4]) for b in page.get_text("blocks") if b[6] == 0 and FIGURE_MARK.match(b[4])]
+    if not marks:
+        return []
+    try:
+        clusters = page.cluster_drawings()
+    except Exception:
+        return []
+    return [pymupdf.Rect(c) & page.rect for c in clusters
+            if .15 * area < pymupdf.Rect(c).get_area() < .92 * area
+            and any(pymupdf.Rect(c).contains(m) for m in marks)]
+
+
 def _save_raster(block: dict, path: Path) -> tuple[int, int] | None:
     try:
         import io
@@ -397,6 +415,13 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
         H = page.rect.height
         items.append({"t": "page", "page": pno + 1})
         fig_list = _figure_rects(page, blocks)
+        # 囲み型の図（枠の中に「FIGURE 1」などがある文字の多いインフォグラフィック）は
+        # 中の文字を本文として並べず、図として画像で見せる
+        panels = _panels(orig[pno]) if orig is not None and pno < orig.page_count else []
+        if panels:
+            fig_list = [(r, ras) for r, ras in fig_list
+                        if not any((p & r).get_area() > .5 * r.get_area() for p in panels)]
+            fig_list += [(p, None) for p in panels]
         figs = [r for r, _ in fig_list]
         placed = [False] * len(figs)
         orig_blocks = []
@@ -442,6 +467,8 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
             center = pymupdf.Point((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)
             if len(text) <= 120 and any(r.contains(center) for r in figs):
                 continue  # 図の中の文字は図として見せる
+            if any(p.contains(center) for p in panels):
+                continue
             infos.append(info)
 
         for info in _merge_adjacent(infos):
@@ -506,15 +533,45 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                 prev["text"] += " " + text
                 prev["_rect"] = prev["_rect"] | rect
                 continue
-            # 段や改ページで切れた段落はつなぐ
+            # 段や改ページで切れた段落はつなぐ。間に図・図の説明・ページ区切り・脚注が
+            # 挟まっていても、文が終わっていない段落の続きとみなす
+            if kind == "p":
+                k = len(items) - 1
+                while k >= 0 and items[k]["t"] in ("page", "fig", "cap", "note"):
+                    k -= 1
+                if k >= 0 and items[k]["t"] == "p":
+                    prev, adjacent = items[k], True
+                    crossed = k < len(items) - 1
+                else:
+                    crossed = False
+                # 同じページで次の段へ移った（前のブロックより上から始まる）文章も続きとみなす。
+                # 表のセルは短いので対象にしない
+                last = prev.get("_r") if prev is not None else None
+                if (last and last[0] == pno and rect.y0 < last[2] - 30
+                        and len(prev["text"]) >= 20 and len(text) >= 20):
+                    crossed = True
+                # 訳文は日本語の文が「。」で終わっていなければ途中。原文の段落・ブロック境界を
+                # 越えて訳されたものも、すぐ下に続く日本語の文章ならつなぐ
+                if (last and last[0] == pno and -6 <= rect.y0 - last[3] < 14 and abs(rect.x0 - last[1]) < 40
+                        and len(prev["text"]) >= 20 and len(text) >= 10
+                        and JP_RE.search(prev["text"][-10:]) and JP_RE.search(text[:10])):
+                    crossed = True
+                # 図などで右の段の途中から続く場合（左右の段をまたぐ）
+                if (last and last[0] == pno and rect.x0 - last[1] > 100
+                        and len(prev["text"]) >= 20 and len(text) >= 10
+                        and JP_RE.search(prev["text"][-6:]) and JP_RE.search(text[:6])):
+                    crossed = True
             if (kind == "p" and prev is not None and prev["t"] == "p" and adjacent
                     and not prev["text"].endswith(TERMINAL)
-                    and (len(prev["text"]) > 80 or text[:1] in CONTINUATION or items[-1]["t"] == "page")):
+                    and (len(prev["text"]) > 80 or text[:1] in CONTINUATION or crossed)):
                 prev["text"] = _join([prev["text"], text])
+                prev["_r"] = (pno, rect.x0, rect.y0, rect.y1)
                 if original and original not in prev.get("orig", ""):
                     prev["orig"] = _join([prev.get("orig", ""), original])
                 continue
             item = {"t": kind, "text": text, "page": pno + 1}
+            if kind == "p":
+                item["_r"] = (pno, rect.x0, rect.y0, rect.y1)
             if kind in ("h2", "h3"):
                 item["text"] = _tidy_heading(text)
                 item.update(level=info.get("level", 2), source_heading=info.get("source_heading", text),
@@ -537,6 +594,8 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                 it.update({"src": name, "w": pix.width, "h": pix.height})
 
     items.extend(notes)
+    for it in items:
+        it.pop("_r", None)
     source_toc = orig.get_toc() if orig is not None else []
     doc.close()
     if orig is not None:

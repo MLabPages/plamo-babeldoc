@@ -32,6 +32,8 @@ def make_pair(folder: Path) -> tuple[Path, Path]:
         else:
             text(p1, (306, 130, 556, 160), "As a key distribution channel for plant-based food, social commerce "
                  "platforms employ digital technologies like artificial intelligence to", 8, font)
+        # A figure caption between the unfinished paragraph and its continuation on page 2.
+        text(p1, (306, 300, 556, 315), "図1. 研究モデル。" if jp else "Fig. 1. Research model.", 8, font)
         text(p1, (40, 660, 556, 680), "* 責任著者。メールアドレス：a@example.org" if jp else
              "* Corresponding author. E-mail address: a@example.org", 7, font)
         text(p1, (40, 690, 556, 710), "https://doi.org/10.1/x 2025年受理 © 2025 Elsevier Ltd." if jp else
