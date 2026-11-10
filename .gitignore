@@ -8,3 +8,7 @@ library/
 qa/
 *.log
 __pycache__/
+installer/dist/
+python/
+tools/uv/
+install.log

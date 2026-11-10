@@ -6,6 +6,21 @@ Preferred Networks の **PLaMo 3 Translate**（0.8B / 2B / 8B）か、Google の
 
 ## 導入（Windows 10 / 11）
 
+### インストーラーで入れる（おすすめ）
+
+1. [リリースページ](https://github.com/MLabPages/plamo-babeldoc/releases/latest) から
+   `PLaMoPaperReader-Setup.exe` をダウンロードして、ダブルクリックします。
+2. 「WindowsによってPCが保護されました」と出たら、「詳細情報」→「実行」を押します
+   （署名のない個人開発のアプリに出る表示です）。
+3. 使う翻訳モデルを選んで「インストール」を押します。標準の 2B なら、ダウンロードは合計で約3GBです。
+
+管理者権限は不要で、`%LOCALAPPDATA%\Programs\PLaMoPaperReader` に入ります。Python、llama.cpp、
+PLaMo 3 Translate はインストーラーがダウンロードし、デスクトップとスタートメニューにショートカットを作ります。
+途中で止まっても、もう一度実行すれば続きから再開します。モデルを後から足すときも、同じインストーラーで追加を選びます。
+アンインストールは、Windows の「設定」→「アプリ」→「インストールされているアプリ」から行います。
+
+### コマンドで入れる
+
 1. [uv](https://docs.astral.sh/uv/)（Python の管理ツール）を入れます。PowerShell で
    `winget install --id astral-sh.uv -e` を実行し、PowerShell を開き直します。
 2. このリポジトリをダウンロードします（緑の「Code」→「Download ZIP」で展開するか、`git clone`）。
