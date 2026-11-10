@@ -13,7 +13,7 @@ CAPTION_RE = re.compile(r"^(図|表)\s*[\d０-９]+\s*[.．:：\s　]|^(Figure|F
 MATH_RE = re.compile(r"[\U0001D400-\U0001D7FF∑∫√≈≤≥±×÷∂∆∇]")
 JP_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 CONTINUATION = set("をのにがはでともるれりたっゃゅょァィゥェォッャュョーぁぃぅぇぉ、")
-READING_VERSION = 4
+READING_VERSION = 5
 NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+[^\d\W]", re.UNICODE)
 LETTERED_HEADING = re.compile(r"^([IVX]{1,5}|[A-H])\.\s+[A-Z]")
 
@@ -353,6 +353,45 @@ def _figure_rects(page: pymupdf.Page, blocks: list[dict]) -> list[tuple[pymupdf.
 
 
 FIGURE_MARK = re.compile(r"^(FIGURE|Figure|Fig\.?|EXHIBIT|Exhibit)\s*\d")
+TABLE_MARK = re.compile(r"^(TABLE|Table)\s*([\dIVX]+)\b")
+
+
+def _tables(page: pymupdf.Page) -> list[pymupdf.Rect]:
+    """Table regions, shown as images so rows and columns stay aligned."""
+    rects: list[pymupdf.Rect] = []
+    words = page.get_text("blocks")
+    captions = [pymupdf.Rect(b[:4]) for b in words if b[6] == 0 and TABLE_MARK.match(b[4])]
+    if not captions:
+        return rects
+    rules = sorted({(round(d["rect"].y0, 1), round(d["rect"].x0), round(d["rect"].x1))
+                    for d in page.get_drawings() if d["rect"].height < 2.5 and d["rect"].width > 40})
+    # Journal style (Elsevier etc.): a full-width rule under the caption, closed by a double rule.
+    for cap in captions:
+        top = next((r for r in rules if cap.y1 - 3 <= r[0] <= cap.y1 + 20
+                    and r[2] - r[1] >= max(120, .6 * (cap.x1 - cap.x0))), None)
+        if top is None:
+            continue
+        same = [r for r in rules if r[0] > top[0] and abs(r[1] - top[1]) <= 3 and abs(r[2] - top[2]) <= 3]
+        bottom = next((a[0] for a, b in zip(same, same[1:]) if b[0] - a[0] <= 1.5), same[-1][0] if same else None)
+        if bottom is None or bottom - top[0] < 15:
+            continue
+        rect = pymupdf.Rect(top[1], top[0] - 1, top[2], bottom + 2)
+        # Table notes directly below the closing rule belong to the table.
+        for b in sorted(words, key=lambda b: b[1]):
+            br = pymupdf.Rect(b[:4])
+            if b[6] == 0 and 0 <= br.y0 - rect.y1 < 6 and br.x0 >= rect.x0 - 3 and br.x1 <= rect.x1 + 3 \
+                    and re.match(r"^(Note|注|\*|[a-z]\s)", b[4]):
+                rect.y1 = br.y1 + 1
+        rects.append(rect)
+    # Fully ruled tables (grid lines).
+    try:
+        for t in page.find_tables(strategy="lines").tables:
+            r = pymupdf.Rect(t.bbox)
+            if t.row_count >= 2 and t.col_count >= 2 and not any((r & o).get_area() > .5 * r.get_area() for o in rects):
+                rects.append(r)
+    except Exception:
+        pass
+    return rects
 
 
 def _panels(page: pymupdf.Page) -> list[pymupdf.Rect]:
@@ -417,12 +456,21 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
         fig_list = _figure_rects(page, blocks)
         # 囲み型の図（枠の中に「FIGURE 1」などがある文字の多いインフォグラフィック）は
         # 中の文字を本文として並べず、図として画像で見せる
-        panels = _panels(orig[pno]) if orig is not None and pno < orig.page_count else []
+        table_rects = _tables(orig[pno]) if orig is not None and pno < orig.page_count else []
+        panels = (_panels(orig[pno]) if orig is not None and pno < orig.page_count else []) + table_rects
         if panels:
             fig_list = [(r, ras) for r, ras in fig_list
                         if not any((p & r).get_area() > .5 * r.get_area() for p in panels)]
             fig_list += [(p, None) for p in panels]
         figs = [r for r, _ in fig_list]
+        # 表は表題の直後に置く（表の下の本文を処理した時点では置かない）
+        anchored = {i for i, r in enumerate(figs) if any(r == t for t in table_rects)}
+        # 図は、すぐ下に図の説明（「図2.」など）があれば、その説明の直前に置く
+        caption_rects = [pymupdf.Rect(b["bbox"]) for b in blocks if b["type"] == 0
+                         and CAPTION_RE.match("".join(s["text"] for ln in b["lines"] for s in ln["spans"]).strip())]
+        captioned = {i for i, r in enumerate(figs) if i not in anchored and any(
+            -4 <= c.y0 - r.y1 < 40 and not (c.x1 < r.x0 or c.x0 > r.x1) for c in caption_rects)}
+        anchored |= captioned
         placed = [False] * len(figs)
         orig_blocks = []
         used_orig: set[int] = set()
@@ -430,21 +478,25 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
         if orig is not None and pno < orig.page_count:
             orig_blocks = [b for b in orig[pno].get_text("blocks") if b[6] == 0]
 
-        def place_figs_before(y_top: float, x0: float, x1: float, force: bool = False):
+        def emit_fig(i: int) -> None:
             nonlocal fig_no
+            r = figs[i]
+            placed[i] = True
+            fig_no += 1
+            name = f"p{pno + 1}_{fig_no}.png"
+            size = _save_raster(fig_list[i][1], fig_dir / name) if fig_list[i][1] else None
+            if size is None:
+                pix = page.get_pixmap(clip=r, dpi=150)
+                pix.save(str(fig_dir / name))
+                size = (pix.width, pix.height)
+            items.append({"t": "fig", "src": name, "page": pno + 1, "w": size[0], "h": size[1]})
+
+        def place_figs_before(y_top: float, x0: float, x1: float, force: bool = False):
             for i, r in enumerate(figs):
-                if placed[i]:
+                if placed[i] or (i in anchored and not force):
                     continue
                 if force or (r.y1 <= y_top + 4 and not (r.x1 < x0 or r.x0 > x1)):
-                    placed[i] = True
-                    fig_no += 1
-                    name = f"p{pno + 1}_{fig_no}.png"
-                    size = _save_raster(fig_list[i][1], fig_dir / name) if fig_list[i][1] else None
-                    if size is None:
-                        pix = page.get_pixmap(clip=r, dpi=150)
-                        pix.save(str(fig_dir / name))
-                        size = (pix.width, pix.height)
-                    items.append({"t": "fig", "src": name, "page": pno + 1, "w": size[0], "h": size[1]})
+                    emit_fig(i)
 
         infos = []
         text_blocks = [part for b in blocks if b["type"] == 0 for part in _split_by_source(b, sources)]
@@ -582,7 +634,17 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                 item["orig"] = original
             items.extend(notes)
             notes.clear()
+            if kind == "cap":
+                for i in sorted(captioned):
+                    r = figs[i]
+                    if not placed[i] and -4 <= rect.y0 - r.y1 < 40 and not (r.x1 < rect.x0 or r.x0 > rect.x1):
+                        emit_fig(i)
             items.append(item)
+            if kind == "cap":
+                for i in sorted(anchored - captioned):
+                    r = figs[i]
+                    if not placed[i] and -4 <= r.y0 - rect.y1 < 30 and not (r.x1 < rect.x0 or r.x0 > rect.x1):
+                        emit_fig(i)
         place_figs_before(0, 0, 0, force=True)
         for it in items:
             r = it.pop("_rect", None)

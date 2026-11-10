@@ -42,6 +42,12 @@ def make_pair(folder: Path) -> tuple[Path, Path]:
         text(p2, (40, 60, 290, 120), "多様化させることで価値を示す。" if jp else "diversify digital cues to show value.", 8, font)
         text(p2, (40, 130, 290, 145), "2. 方法" if jp else "2. Methods", 8, font, bold=not jp)
         text(p2, (40, 150, 290, 260), body, 8, font)
+        # An Elsevier-style table: caption, full-width rule, cells, closing double rule.
+        text(p2, (40, 300, 290, 315), "表1 信頼性。" if jp else "Table 1 Reliability.", 8, font)
+        for y in (318, 360, 361.2):
+            p2.draw_line((40, y), (290, y), width=.5)
+        text(p2, (40, 322, 290, 336), "変数 アルファ CR" if jp else "Variable alpha CR", 8, font)
+        text(p2, (40, 340, 290, 354), "感覚 0.661 0.802" if jp else "Sensory 0.661 0.802", 8, font)
     source.set_toc([[1, "An English paper title for testing", 1], [2, "1 Introduction", 1], [2, "2 Methods", 2]])
     paths = folder / "original.pdf", folder / "translated.pdf"
     source.save(paths[0]); translated.save(paths[1])
@@ -91,6 +97,12 @@ class ReadingTests(unittest.TestCase):
     def test_rebuild_marker_is_written(self):
         saved = json.loads((self.dir / "reading.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["version"], READING_VERSION)
+
+    def test_table_is_one_image_right_after_its_caption(self):
+        kinds = [(i["t"], i.get("text", "")) for i in self.items]
+        at = kinds.index(("cap", "表1 信頼性。"))
+        self.assertEqual(kinds[at + 1][0], "fig")
+        self.assertFalse(any("0.661" in t for _, t in kinds))
 
 
 if __name__ == "__main__":
