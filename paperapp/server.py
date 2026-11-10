@@ -80,21 +80,25 @@ class Library:
         return sorted(out, key=lambda m: m.get("created", 0), reverse=True)
 
     def add(self, filename: str, data: bytes) -> str:
+        import pymupdf
+
+        title = Path(filename).stem
+        try:
+            with pymupdf.open(stream=data, filetype="pdf") as doc:
+                if doc.needs_pass:
+                    raise ValueError("パスワード付きPDFです。解除したPDFを選んでください。")
+                pages = doc.page_count
+                if not pages:
+                    raise ValueError("ページのないPDFは翻訳できません。")
+                meta_title = (doc.metadata or {}).get("title") or ""
+                if 8 < len(meta_title) < 300 and not meta_title.lower().endswith((".pdf", ".doc", ".docx")):
+                    title = meta_title
+        except (pymupdf.FileDataError, pymupdf.EmptyFileError) as e:
+            raise ValueError("PDFを読み込めません。ファイルが壊れていないか確認してください。") from e
         doc_id = secrets.token_hex(6)
         d = self.doc_dir(doc_id)
         d.mkdir(parents=True)
         (d / "original.pdf").write_bytes(data)
-        title = Path(filename).stem
-        try:
-            import pymupdf
-
-            with pymupdf.open(str(d / "original.pdf")) as doc:
-                pages = doc.page_count
-                meta_title = (doc.metadata or {}).get("title") or ""
-                if 8 < len(meta_title) < 300 and not meta_title.lower().endswith((".pdf", ".doc", ".docx")):
-                    title = meta_title
-        except Exception:
-            pages = 0
         self.save_meta(doc_id, {"id": doc_id, "filename": filename, "title": title, "pages": pages,
                                 "created": time.time(), "translations": {}})
         return doc_id
@@ -115,51 +119,75 @@ class Jobs:
     def submit(self, doc_id: str, engine: str, translate_references: bool | None = None) -> None:
         if translate_references is None:
             translate_references = bool(load_settings().get("translate_references"))
-        self.library.update_translation(doc_id, engine, status="queued", progress=0, stage="順番待ち",
-                                        error="", warning="", queued=time.time(), refs=translate_references,
-                                        label=engine_label(engine, load_settings()))
-        self.q.put((doc_id, engine))
+        with self.library.lock:
+            tr = self.library.meta(doc_id).get("translations", {}).get(engine, {})
+            if tr.get("status") in ("queued", "running"):
+                return  # 連打や同時リクエストでも同じ翻訳は一度だけ受け付ける
+            job_id = secrets.token_hex(8)
+            self.library.update_translation(doc_id, engine, status="queued", progress=0, stage="順番待ち",
+                                            error="", warning="", queued=time.time(), refs=translate_references,
+                                            label=engine_label(engine, load_settings()), job_id=job_id)
+            self.q.put((doc_id, engine, job_id))
+
+    def _active(self, doc_id: str, engine: str, job_id: str) -> bool:
+        try:
+            tr = self.library.meta(doc_id).get("translations", {}).get(engine, {})
+            return tr.get("job_id") == job_id and tr.get("status") in ("queued", "running")
+        except KeyError:
+            return False
+
+    def _update(self, doc_id: str, engine: str, job_id: str, **kw) -> bool:
+        with self.library.lock:
+            if not self._active(doc_id, engine, job_id):
+                return False
+            self.library.update_translation(doc_id, engine, **kw)
+            return True
 
     def cancel(self, doc_id: str, engine: str) -> None:
-        tr = self.library.meta(doc_id).get("translations", {}).get(engine, {})
-        if tr.get("status") in ("queued", "running"):
-            self.library.update_translation(doc_id, engine, status="canceled", stage="中止しました")
-        if self.current == (doc_id, engine) and self.proc and self.proc.poll() is None:
-            self.proc.kill()
+        with self.library.lock:
+            tr = self.library.meta(doc_id).get("translations", {}).get(engine, {})
+            if tr.get("status") in ("queued", "running"):
+                self.library.update_translation(doc_id, engine, status="canceled", stage="中止しました")
+            if self.current == (doc_id, engine) and self.proc and self.proc.poll() is None:
+                self.proc.kill()
 
     def recover(self) -> None:
         for meta in self.library.list():
             for engine, tr in meta.get("translations", {}).items():
                 if tr.get("status") in ("queued", "running"):
+                    self.library.update_translation(meta["id"], engine, status="interrupted")
                     self.submit(meta["id"], engine, bool(tr.get("refs")))
 
     def _loop(self) -> None:
         while True:
-            doc_id, engine = self.q.get()
+            doc_id, engine, job_id = self.q.get()
             try:
-                tr = self.library.meta(doc_id).get("translations", {}).get(engine, {})
-                if tr.get("status") != "queued":
-                    continue  # 中止された
-                self.current = (doc_id, engine)
-                self._run(doc_id, engine)
+                with self.library.lock:
+                    if not self._active(doc_id, engine, job_id):
+                        continue  # 中止済み、または再試行前の古いキュー項目
+                    self.current = (doc_id, engine)
+                self._run(doc_id, engine, job_id)
             except Exception as e:  # noqa: BLE001
-                try:
-                    self.library.update_translation(doc_id, engine, status="error", error=str(e))
-                except KeyError:
-                    pass
+                self._update(doc_id, engine, job_id, status="error", error=str(e))
             finally:
-                self.current = None
-                self.proc = None
+                with self.library.lock:
+                    self.current = None
+                    self.proc = None
+                self.q.task_done()
 
-    def _run(self, doc_id: str, engine: str) -> None:
+    def _run(self, doc_id: str, engine: str, job_id: str) -> None:
         lib = self.library
         d = lib.doc_dir(doc_id)
         if not d.exists():
             return
         settings = load_settings()
         started = time.time()
-        lib.update_translation(doc_id, engine, status="running", progress=0, stage="準備中",
-                               started=started, label=engine_label(engine, settings))
+        def update(**kw):
+            return self._update(doc_id, engine, job_id, **kw)
+
+        if not update(status="running", progress=0, stage="準備中",
+                      started=started, label=engine_label(engine, settings)):
+            return
         spec = REGISTRY[engine]
         ok, why = spec.available(settings)
         if not ok:
@@ -169,8 +197,11 @@ class Jobs:
         env["PYTHONIOENCODING"] = "utf-8"
         refs = bool(lib.meta(doc_id).get("translations", {}).get(engine, {}).get("refs"))
         if isinstance(spec, PlamoEngine):
-            lib.update_translation(doc_id, engine, stage="翻訳モデルを起動中")
+            if not update(stage="翻訳モデルを起動中"):
+                return
             self.llama.ensure(engine)
+        if not self._active(doc_id, engine, job_id):
+            return
         out = d / "out" / engine
         if out.exists():
             shutil.rmtree(out, ignore_errors=True)
@@ -178,15 +209,18 @@ class Jobs:
         py = Path(sys.executable)
         if py.name.lower() == "pythonw.exe":
             py = py.with_name("python.exe")
-        proc = subprocess.Popen(
-            [str(py), "-m", "paperapp.worker", "--engine", engine,
-             "--input", str(d / "original.pdf"), "--outdir", str(out)]
-            + (["--translate-references"] if refs else [])
-            + (["--gemini-model", settings.get("gemini_model", "")] if engine == "gemini" else []),
-            cwd=str(ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW,
-        )
-        self.proc = proc
+        with lib.lock:
+            if not self._active(doc_id, engine, job_id):
+                return
+            proc = subprocess.Popen(
+                [str(py), "-m", "paperapp.worker", "--engine", engine,
+                 "--input", str(d / "original.pdf"), "--outdir", str(out)]
+                + (["--translate-references"] if refs else [])
+                + (["--gemini-model", settings.get("gemini_model", "")] if engine == "gemini" else []),
+                cwd=str(ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW,
+            )
+            self.proc = proc
         tail: list[str] = []
         error = ""
         warning = ""
@@ -201,8 +235,7 @@ class Jobs:
                     continue
                 if ev.get("event") == "progress" and time.time() - last_write > 0.7:
                     last_write = time.time()
-                    lib.update_translation(doc_id, engine, progress=ev.get("progress", 0),
-                                           stage=stage_label(ev.get("stage", "")))
+                    update(progress=ev.get("progress", 0), stage=stage_label(ev.get("stage", "")))
                 elif ev.get("event") == "error":
                     error = ev.get("error", "")
                 elif ev.get("event") == "warning":
@@ -212,31 +245,33 @@ class Jobs:
             elif line.strip():
                 tail = (tail + [line])[-25:]
         proc.wait()
-        if lib.meta(doc_id).get("translations", {}).get(engine, {}).get("status") == "canceled":
+        if not self._active(doc_id, engine, job_id):
             shutil.rmtree(out, ignore_errors=True)
             return
         log = out / "worker.log"
         log.write_text("\n".join(tail), encoding="utf-8")
         mono = next(iter(sorted(out.glob("*.mono.pdf"))), None)
-        if mono is None:
+        if proc.returncode != 0 or error or mono is None:
             msg = error or next((t for t in reversed(tail) if "Error" in t or "error" in t), "") or "翻訳に失敗しました。"
-            lib.update_translation(doc_id, engine, status="error", error=msg[-400:])
+            update(status="error", error=msg[-400:])
             return
         mono.replace(out / "translated.pdf")
         dual = next(iter(sorted(out.glob("*.dual.pdf"))), None)
         if dual:
             dual.replace(out / "dual.pdf")
-        lib.update_translation(doc_id, engine, stage="読書モードを準備中", progress=99)
+        if not update(stage="読書モードを準備中", progress=99):
+            return
         data = write_reading(out / "translated.pdf", d / "original.pdf", out)
         updates = {"status": "done", "progress": 100, "stage": "完了", "error": "", "warning": warning, "skipped_refs": skipped_refs,
                    "seconds": round(time.time() - started, 1)}
-        meta = lib.meta(doc_id)
-        if data.get("title") and meta.get("title_ja") is None:
-            with lib.lock:
-                meta = lib.meta(doc_id)
+        with lib.lock:
+            if not self._active(doc_id, engine, job_id):
+                return
+            meta = lib.meta(doc_id)
+            if data.get("title") and meta.get("title_ja") is None:
                 meta["title_ja"] = data["title"]
                 lib.save_meta(doc_id, meta)
-        lib.update_translation(doc_id, engine, **updates)
+            update(**updates)
 
 
 def lan_ip() -> str:
@@ -319,6 +354,8 @@ def make_handler(app: App):
 
         def _body(self, limit: int = 300 * 1024 * 1024) -> bytes:
             n = int(self.headers.get("Content-Length") or 0)
+            if n < 0:
+                raise ValueError("ファイルサイズが正しくありません。")
             if n > limit:
                 raise ValueError("ファイルが大きすぎます。")
             return self.rfile.read(n)
@@ -469,6 +506,8 @@ def make_handler(app: App):
                 return self._err(404, "見つかりません")
             except KeyError:
                 return self._err(404, "見つかりません")
+            except ValueError as e:
+                return self._err(400, str(e))
             except OSError as e:
                 return self._err(500, f"共有を開始できませんでした: {e}")
             except Exception as e:  # noqa: BLE001
