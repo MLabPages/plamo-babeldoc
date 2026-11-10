@@ -4,6 +4,24 @@
 レイアウト処理は [BabelDOC](https://github.com/funstory-ai/BabelDOC)、翻訳はPC内で動く
 Preferred Networks の **PLaMo 3 Translate**（0.8B / 2B / 8B）か、Google の **Gemini** を選べます。
 
+## 導入（Windows 10 / 11）
+
+1. [uv](https://docs.astral.sh/uv/)（Python の管理ツール）を入れます。PowerShell で
+   `winget install --id astral-sh.uv -e` を実行し、PowerShell を開き直します。
+2. このリポジトリをダウンロードします（緑の「Code」→「Download ZIP」で展開するか、`git clone`）。
+3. フォルダで PowerShell を開き、セットアップを実行します。
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File tools\setup.ps1
+   ```
+
+   Python 環境、llama.cpp、PLaMo 3 Translate 2B（約1.8GB）を用意し、デスクトップとスタートメニューに
+   ショートカットを作ります。モデルは `-Models 0.8b,2b,8b` で選べます（0.8B は約0.6GB、8B は約5.3GB）。
+   GPU のない PC では `-Cpu` を付けてください。
+
+初回の翻訳では、BabelDOC がレイアウト解析用のデータとフォントをダウンロードします。2 回目以降は、
+PLaMo を使う限り論文を外部に送らずに PC 内で翻訳します。
+
 ## 起動
 
 デスクトップかスタートメニューの「PLaMo論文リーダー」を開きます。
