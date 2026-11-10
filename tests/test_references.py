@@ -34,16 +34,15 @@ REFS = [
 ]
 
 BODY = [
-    # 引用の多い本文段落
-    "Shoppers place a high value on tactile input (Krishna et al., 2024), and retailers are well aware of the "
-    "importance of product touch for consumers (Liu, W. et al., 2023a). Research has provided ample evidence of the "
-    "role of haptic product cues in consumer responses (De Canio and Fuentes-Blasco, 2021; Kergoat et al., 2012; "
-    "Krishna et al., 2024; Pantoja et al., 2020). " * 3,
-    "Silicon samples consist of synthetically generated participants that seek to mimic human respondents to "
-    "describe, explain and predict human behavior (Sarstedt et al., 2024).",
-    "In 2023, worldwide retail e-commerce sales were estimated at $5.8 trillion (Statista, 2024).",
-    "シリコンサンプルは、人間の回答者を模倣する合成的な参加者である（Sarstedt et al., 2024）。",
-    "Figure 2. Input PWM vs corresponding motor angular speed (2024).",
+    # 引用の多い本文段落（テスト用に作った例文）
+    "Readers often judge a book by its weight in the hand (Alder et al., 2021), and publishers know that paper "
+    "texture shapes first impressions (Brook, R. et al., 2019a). Earlier studies link cover materials to "
+    "perceived value (Cole and Dunmore-Hale, 2018; Ernst et al., 2016; Alder et al., 2021; Fenwick et al., 2020). " * 3,
+    "Synthetic respondents are simulated people that imitate survey participants in order to "
+    "anticipate how real groups would answer (Garner et al., 2022).",
+    "In 2022, global spending on board games was estimated at $13.4 billion (Market Survey, 2023).",
+    "合成回答者は、調査参加者を模倣するシミュレーション上の人物である（Garner et al., 2022）。",
+    "Figure 3. Motor current versus wheel speed under load (2023).",
 ]
 
 

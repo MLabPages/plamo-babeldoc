@@ -107,4 +107,20 @@ PDF を `translate.bat` にドラッグ＆ドロップしても訳せます（2B
 - `paperapp/reading.py`: 翻訳済みPDFから読書モード用の段落・見出し・図・数式を取り出す
 - `paperapp/static/`: 画面（HTML / CSS / JavaScript）
 
-PLaMo 3 Translate は PLaMo Community License の範囲で、年間売上10億円以下の個人・企業なら無料で使えます。
+## ライセンス
+
+このアプリのソースコードは [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0）で公開します。
+レイアウト処理に使う [BabelDOC](https://github.com/funstory-ai/BabelDOC) が AGPL-3.0 のため、それに合わせています。
+
+翻訳モデルの PLaMo 3 Translate（0.8B / 2B / 8B）はこのリポジトリに含まれていません。各自が Hugging Face の
+[pfnet](https://huggingface.co/pfnet) から入手し、[PLaMo Community License](https://plamo.preferredai.jp/info/plamo-community-license-ja)
+に従って使ってください。
+
+- 個人の学習・趣味や、学術などの非商用の利用は無料で、PFNへの事前登録も不要です。
+- 商用利用は、利用者（関係会社を含む）の直近事業年度の売上が10億円以下なら、PFNの登録フォームで届け出れば無料です。
+  10億円を超える場合は、PFNとの個別の契約が必要です。
+- 商用利用では「Built with PLaMo」の表示が求められます。
+
+**Built with PLaMo**
+
+llama.cpp（MIT）とフォントはこのリポジトリに含まず、セットアップや実行の際に取得します。
