@@ -217,8 +217,11 @@ class Jobs:
             shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)
         py = Path(sys.executable)
-        if py.name.lower() == "pythonw.exe":
-            py = py.with_name("python.exe")
+        if py.name.lower() != "python.exe":
+            # pythonw.exe やアプリ名の PLaMoPaperReader.exe からは、コンソール版で翻訳プロセスを動かす
+            py = Path(sys.prefix) / "Scripts" / "python.exe"
+            if not py.exists():
+                py = Path(sys.executable).with_name("python.exe")
         with lib.lock:
             if not self._active(doc_id, engine, job_id):
                 return
