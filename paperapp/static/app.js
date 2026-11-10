@@ -232,6 +232,7 @@ article.addEventListener("click", (e) => {
   if (o && o.classList.contains("orig") && !prefs.orig) o.classList.toggle("open");
   setCurrent(el);
   if (tts.playing) ttsStart(Number(el.dataset.i));
+  else if (tts.queue.length) ttsStop();
 });
 
 function setCurrent(el) {
@@ -314,12 +315,13 @@ document.addEventListener("keydown", (e) => {
 function stepPara(d) {
   const list = units(); const c = article.querySelector(".current");
   const i = Math.max(0, Math.min(list.length - 1, (c ? Number(c.dataset.i) : 0) + d));
-  if (tts.playing) ttsStart(i); else { setCurrent(list[i]); list[i].scrollIntoView({block: "center", behavior: "smooth"}); }
+  if (!list.length) return;
+  if (tts.playing) ttsStart(i); else { ttsStop(); setCurrent(list[i]); list[i].scrollIntoView({block: "center", behavior: "smooth"}); }
 }
 
 // ---------------- 読み上げ ----------------
 const synth = window.speechSynthesis;
-const tts = {playing: false, idx: 0, queue: [], gen: 0};
+const tts = {playing: false, idx: 0, queue: [], gen: 0, utterance: null, docKey: null};
 function loadVoices() {
   if (!synth) { $("#ttsBar").classList.add("hidden"); return; }
   const vs = synth.getVoices().filter((v) => /^ja/i.test(v.lang));
@@ -327,36 +329,63 @@ function loadVoices() {
   $("#ttsVoice").innerHTML = vs.length ? vs.map((v) => '<option value="' + esc(v.name) + '"' + (v.name === prefs.voice ? " selected" : "") + ">" + esc(v.name.replace(/^Microsoft /, "").replace(/ - Japanese \(Japan\)/, "")) + "</option>").join("") : "<option>日本語の声がありません</option>";
 }
 if (synth) { loadVoices(); synth.onvoiceschanged = loadVoices; }
-$("#ttsVoice").addEventListener("change", (e) => { prefs.voice = e.target.value; savePrefs(); if (tts.playing) ttsStart(tts.idx); });
+$("#ttsVoice").addEventListener("change", (e) => { prefs.voice = e.target.value; savePrefs(); if (tts.playing) ttsStart(tts.idx, true); });
 $("#ttsRate").addEventListener("input", (e) => { prefs.rate = Number(e.target.value); savePrefs(); applyPrefs(); });
-$("#ttsRate").addEventListener("change", () => { if (tts.playing) ttsStart(tts.idx); });
+$("#ttsRate").addEventListener("change", () => { if (tts.playing) ttsStart(tts.idx, true); });
 
 const cleanForSpeech = (s) => s
   .replace(/\[[\d,\s\u2013\-–]+\]/g, "")
   .replace(/[（(][^（）()]{0,80}?\d{4}[a-z]?[^（）()]{0,40}?[)）]/g, "")
   .replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim();
-const sentences = (s) => (s.match(/[^。！？!?]+[。！？!?」』）)]*|[^。！？!?]+$/g) || [s]).map((x) => x.trim()).filter(Boolean);
+// Bound each request, including punctuation-free text, without dropping characters.
+function sentences(s) {
+  const chars = Array.from(s), chunks = [];
+  while (chars.length) {
+    let end = Math.min(120, chars.length);
+    const sentenceEnd = chars.slice(0, end).findIndex((c) => /[。！？!?]/.test(c));
+    if (sentenceEnd >= 0) end = sentenceEnd + 1;
+    else if (chars.length > end) {
+      for (let i = end - 1; i >= 40; i--) {
+        if (/[、，,；;\s]/.test(chars[i])) { end = i + 1; break; }
+      }
+    }
+    const chunk = chars.splice(0, end).join("");
+    if (chunk.trim()) chunks.push(chunk);
+  }
+  return chunks;
+}
 
 function speakNext(gen) {
   if (gen !== tts.gen || !tts.playing) return;
-  if (!tts.queue.length) {
+  while (!tts.queue.length) {
     const list = units();
     if (tts.idx + 1 >= list.length) { ttsStop(); return; }
     loadPara(tts.idx + 1);
   }
-  const text = tts.queue.shift();
-  if (!text) { speakNext(gen); return; }
+  const text = tts.queue[0]; // Remove only after confirmed completion.
   const u = new SpeechSynthesisUtterance(text);
+  tts.utterance = u; // Keep the utterance alive until its callback.
   u.lang = "ja-JP"; u.rate = prefs.rate;
   const v = synth.getVoices().find((x) => x.name === prefs.voice) || synth.getVoices().find((x) => /^ja/i.test(x.lang));
   if (v) u.voice = v;
-  u.onend = () => speakNext(gen);
-  u.onerror = (e) => { if (e.error !== "interrupted" && e.error !== "canceled") speakNext(gen); };
-  synth.speak(u);
+  const active = () => gen === tts.gen && tts.playing && tts.utterance === u;
+  u.onend = () => {
+    if (!active()) return;
+    tts.utterance = null;
+    tts.queue.shift();
+    speakNext(gen);
+  };
+  u.onerror = () => {
+    if (!active()) return;
+    ttsStop(true);
+    toast("読み上げが止まりました。「再開」で未読の文から読み直します。続く場合は声を変更してください。");
+  };
+  try { synth.speak(u); } catch (_) { u.onerror(); }
 }
 function loadPara(i) {
   const list = units();
   tts.idx = i;
+  tts.docKey = cur.id + ":" + cur.engine;
   article.querySelectorAll(".speaking").forEach((x) => x.classList.remove("speaking"));
   const el = list[i];
   if (!el) return;
@@ -365,30 +394,37 @@ function loadPara(i) {
   tts.queue = sentences(cleanForSpeech(el.textContent));
   savePos();
 }
-function ttsStart(i) {
+function ttsStart(i, resume = false) {
   if (!synth) return;
+  // Invalidate callbacks before cancel(), which can dispatch an error synchronously.
+  tts.gen++; tts.playing = false; tts.utterance = null;
   synth.cancel();
-  tts.playing = true; tts.gen++;
-  loadPara(i);
+  tts.playing = true;
+  if (!resume || i !== tts.idx || tts.docKey !== cur.id + ":" + cur.engine || !tts.queue.length) loadPara(i);
+  else {
+    const el = units()[i];
+    if (el) { el.classList.add("speaking"); setCurrent(el); }
+  }
   $("#ttsPlay").textContent = "⏸ 停止";
   const g = tts.gen;
   setTimeout(() => speakNext(g), 60);
 }
-function ttsStop() {
-  tts.playing = false; tts.gen++;
+function ttsStop(preserve = false) {
+  tts.playing = false; tts.gen++; tts.utterance = null;
   if (synth) synth.cancel();
+  if (!preserve) { tts.queue = []; tts.docKey = null; }
   article.querySelectorAll(".speaking").forEach((x) => x.classList.remove("speaking"));
-  $("#ttsPlay").textContent = "▶ 読み上げ";
+  $("#ttsPlay").textContent = preserve && tts.queue.length ? "▶ 再開" : "▶ 読み上げ";
 }
 function ttsToggle() {
-  if (tts.playing) ttsStop();
+  if (tts.playing) ttsStop(true);
+  else if (tts.queue.length && tts.docKey === cur.id + ":" + cur.engine) ttsStart(tts.idx, true);
   else { const c = article.querySelector(".current") || units()[0]; if (c) ttsStart(Number(c.dataset.i)); }
 }
 $("#ttsPlay").addEventListener("click", ttsToggle);
 $("#ttsPrev").addEventListener("click", () => stepPara(-1));
 $("#ttsNext").addEventListener("click", () => stepPara(1));
-// Chrome系は長時間の読み上げが止まることがあるため定期的に起こす
-setInterval(() => { if (tts.playing && synth && synth.speaking && !synth.paused) { synth.pause(); synth.resume(); } }, 12000);
+// Short requests avoid periodic pause/resume interrupting an unfinished sentence.
 
 // ---------------- 起動 ----------------
 applyPrefs();
