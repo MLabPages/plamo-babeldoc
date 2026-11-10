@@ -16,13 +16,13 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyTitle("PLaMo 論文リーダー セットアップ")]
 [assembly: System.Reflection.AssemblyProduct("PLaMo 論文リーダー")]
 [assembly: System.Reflection.AssemblyCompany("MLabPages")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.1.0")]
 
 static class Setup
 {
-    public const string Version = "1.0.0";
-    public const string Tag = "v1.0.0";
+    public const string Version = "1.0.1";
+    public const string Tag = "v1.0.1";
     const string Repo = "MLabPages/plamo-babeldoc";
     const string LlamaBuild = "b12211";
     const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\PLaMoPaperReader";
@@ -149,6 +149,11 @@ static class Setup
                 (done, total) => report(label + "（" + (done >> 20) + " / " + (total >> 20) + " MB）", start + (int)(span * done / Math.Max(total, 1))));
         }
 
+        report("起動用プログラムを準備しています", 91);
+        string csc = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"Microsoft.NET\Framework64\v4.0.30319\csc.exe");
+        Exec(csc, "/nologo /target:winexe /optimize+ /codepage:65001 \"/out:" + Path.Combine(dir, "PLaMoPaperReader.exe") + "\" \"/win32icon:" +
+             Path.Combine(dir, @"assets\app.ico") + "\" /r:System.Windows.Forms.dll \"" + Path.Combine(dir, @"installer\Launcher.cs") + "\"", dir, null);
+
         if (o.Shortcuts)
         {
             report("ショートカットを作っています", 92);
@@ -177,6 +182,8 @@ static class Setup
 
     public static void LaunchApp(string dir)
     {
+        string launcher = Path.Combine(dir, "PLaMoPaperReader.exe");
+        if (File.Exists(launcher)) { Process.Start(new ProcessStartInfo(launcher) { WorkingDirectory = dir, UseShellExecute = false }); return; }
         Process.Start(new ProcessStartInfo(Path.Combine(dir, @".venv\Scripts\pythonw.exe"), "\"" + Path.Combine(dir, "app.py") + "\"") { WorkingDirectory = dir, UseShellExecute = false });
     }
 
