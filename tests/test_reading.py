@@ -48,6 +48,11 @@ def make_pair(folder: Path) -> tuple[Path, Path]:
             p2.draw_line((40, y), (290, y), width=.5)
         text(p2, (40, 322, 290, 336), "変数 アルファ CR" if jp else "Variable alpha CR", 8, font)
         text(p2, (40, 340, 290, 354), "感覚 0.661 0.802" if jp else "Sensory 0.661 0.802", 8, font)
+        # A flat diagram (boxes and an arrow) above its caption, lower than the usual figure size.
+        p2.draw_rect((320, 60, 420, 85), width=.6)
+        p2.draw_rect((460, 60, 550, 85), width=.6)
+        p2.draw_line((420, 72), (460, 72), width=.6)
+        text(p2, (360, 92, 520, 106), "図2. モデル。" if jp else "Fig. 2. Model.", 8, font)
     source.set_toc([[1, "An English paper title for testing", 1], [2, "1 Introduction", 1], [2, "2 Methods", 2]])
     paths = folder / "original.pdf", folder / "translated.pdf"
     source.save(paths[0]); translated.save(paths[1])
@@ -103,6 +108,11 @@ class ReadingTests(unittest.TestCase):
         at = kinds.index(("cap", "表1 信頼性。"))
         self.assertEqual(kinds[at + 1][0], "fig")
         self.assertFalse(any("0.661" in t for _, t in kinds))
+
+    def test_flat_diagram_above_caption_becomes_a_figure(self):
+        kinds = [(i["t"], i.get("text", "")) for i in self.items]
+        at = kinds.index(("cap", "図2. モデル。"))
+        self.assertEqual(kinds[at - 1][0], "fig")
 
 
 if __name__ == "__main__":

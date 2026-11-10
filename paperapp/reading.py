@@ -13,7 +13,7 @@ CAPTION_RE = re.compile(r"^(図|表)\s*[\d０-９]+\s*[.．:：\s　]|^(Figure|F
 MATH_RE = re.compile(r"[\U0001D400-\U0001D7FF∑∫√≈≤≥±×÷∂∆∇]")
 JP_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 CONTINUATION = set("をのにがはでともるれりたっゃゅょァィゥェォッャュョーぁぃぅぇぉ、")
-READING_VERSION = 5
+READING_VERSION = 6
 NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+[^\d\W]", re.UNICODE)
 LETTERED_HEADING = re.compile(r"^([IVX]{1,5}|[A-H])\.\s+[A-Z]")
 
@@ -409,6 +409,25 @@ def _panels(page: pymupdf.Page) -> list[pymupdf.Rect]:
             and any(pymupdf.Rect(c).contains(m) for m in marks)]
 
 
+def _captioned_figures(page: pymupdf.Page) -> list[pymupdf.Rect]:
+    """Drawings directly above a "Fig. N" caption are a figure, however small or flat."""
+    area = page.rect.get_area()
+    caps = [pymupdf.Rect(b[:4]) for b in page.get_text("blocks") if b[6] == 0 and FIGURE_MARK.match(b[4])]
+    if not caps:
+        return []
+    try:
+        clusters = [pymupdf.Rect(c) & page.rect for c in page.cluster_drawings()]
+    except Exception:
+        return []
+    out = []
+    for c in clusters:
+        if not .008 * area < c.get_area() < .6 * area or c.width < .15 * page.rect.width:
+            continue
+        if any(-4 <= cap.y0 - c.y1 < 30 and not (cap.x1 < c.x0 or cap.x0 > c.x1) for cap in caps):
+            out.append(c + (-3, -3, 3, 3))
+    return out
+
+
 def _save_raster(block: dict, path: Path) -> tuple[int, int] | None:
     try:
         import io
@@ -457,7 +476,8 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
         # 囲み型の図（枠の中に「FIGURE 1」などがある文字の多いインフォグラフィック）は
         # 中の文字を本文として並べず、図として画像で見せる
         table_rects = _tables(orig[pno]) if orig is not None and pno < orig.page_count else []
-        panels = (_panels(orig[pno]) if orig is not None and pno < orig.page_count else []) + table_rects
+        panels = ((_panels(orig[pno]) + _captioned_figures(orig[pno]))
+                  if orig is not None and pno < orig.page_count else []) + table_rects
         if panels:
             fig_list = [(r, ras) for r, ras in fig_list
                         if not any((p & r).get_area() > .5 * r.get_area() for p in panels)]
