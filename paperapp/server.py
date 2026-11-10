@@ -24,10 +24,20 @@ from .engines import NO_WINDOW, LlamaManager
 from .envkeys import env_for_child, get_env
 from .registry import ENGINES as REGISTRY
 from .registry import PlamoEngine, engine_label, engine_list
-from .reading import write_reading
+from .reading import reading_is_current, write_reading
 
 ID_RE = re.compile(r"^[a-z0-9]{6,32}$")
 ENGINES = set(REGISTRY)
+_reading_lock = threading.Lock()
+
+
+def ensure_reading(doc_dir: Path, out: Path) -> None:
+    """Rebuild reading data and PDF bookmarks made by an older version, once."""
+    if not (out / "translated.pdf").exists() or reading_is_current(out):
+        return
+    with _reading_lock:
+        if not reading_is_current(out):
+            write_reading(out / "translated.pdf", doc_dir / "original.pdf", out)
 
 
 def stage_label(stage: str) -> str:
@@ -436,6 +446,8 @@ def make_handler(app: App):
                         if engine not in ENGINES:
                             return self._err(404, "見つかりません")
                         out = d / "out" / engine
+                        if kind in ("translated", "dual", "reading"):
+                            ensure_reading(d, out)
                         if kind == "translated":
                             return self._file(out / "translated.pdf", "application/pdf")
                         if kind == "dual":

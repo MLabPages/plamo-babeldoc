@@ -13,6 +13,199 @@ CAPTION_RE = re.compile(r"^(図|表)\s*[\d０-９]+\s*[.．:：\s　]|^(Figure|F
 MATH_RE = re.compile(r"[\U0001D400-\U0001D7FF∑∫√≈≤≥±×÷∂∆∇]")
 JP_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 CONTINUATION = set("をのにがはでともるれりたっゃゅょァィゥェォッャュョーぁぃぅぇぉ、")
+READING_VERSION = 2
+NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+[^\d\W]", re.UNICODE)
+LETTERED_HEADING = re.compile(r"^([IVX]{1,5}|[A-H])\.\s+[A-Z]")
+
+
+def _key(text: str) -> str:
+    return "".join(c.lower() for c in text if c.isalnum())
+
+
+def _tidy_heading(text: str) -> str:
+    # "A B S T R A C T" -> "ABSTRACT"
+    return re.sub(r"\b(?:[A-Z] ){3,}[A-Z]\b", lambda m: m.group(0).replace(" ", ""), text)
+
+
+def reading_is_current(out_dir: Path) -> bool:
+    try:
+        return json.loads((out_dir / "reading.json").read_text(encoding="utf-8")).get("version") == READING_VERSION
+    except (OSError, ValueError):
+        return False
+
+
+def _source_layout(doc: pymupdf.Document) -> list[list[dict]]:
+    """Use the original typography, not resized translated fragments, as structure."""
+    toc = doc.get_toc()
+    sizes = sorted(sp["size"] for page in doc for b in page.get_text("dict")["blocks"] if b["type"] == 0
+                   for ln in b["lines"] for sp in ln["spans"] for _ in sp["text"].strip())
+    median = sizes[len(sizes) // 2] if sizes else 10.0
+    result = []
+    for pno, page in enumerate(doc):
+        blocks = []
+        heading_keys = {_key(label) for level, label, p in toc if p == pno + 1 and level > 1}
+        for block in page.get_text("dict")["blocks"]:
+            if block["type"] != 0:
+                continue
+            pending = []
+            pending_kind = None
+            heading_acc = ""
+
+            def flush():
+                if pending:
+                    rect = pymupdf.Rect(pending[0]["bbox"])
+                    for line in pending[1:]:
+                        rect |= pymupdf.Rect(line["bbox"])
+                    blocks.append({"type": 0, "bbox": tuple(rect), "lines": list(pending)})
+                    pending.clear()
+
+            for line in block["lines"]:
+                text = "".join(s["text"] for s in line["spans"]).strip()
+                if heading_acc:
+                    acc = heading_acc + _key(text)
+                    if acc in heading_keys:
+                        pending.append(line)
+                        flush()
+                        pending_kind, heading_acc = None, ""
+                        continue
+                    if any(k.startswith(acc) for k in heading_keys):
+                        pending.append(line)
+                        heading_acc = acc
+                        continue
+                    flush()
+                    pending_kind, heading_acc = None, ""
+                line_key = _key(text)
+                if len(line_key) >= 8 and line_key not in heading_keys and any(
+                        k.startswith(line_key) for k in heading_keys):
+                    flush()  # a long section title wrapped onto the next line
+                    pending.append(line)
+                    pending_kind, heading_acc = "heading", line_key
+                    continue
+                styled = any(s["flags"] & (2 | 16) for s in line["spans"])
+                spans = [s for s in line["spans"] if s["text"].strip()]
+                all_bold = bool(spans) and all(s["flags"] & 16 or "bold" in s["font"].lower() for s in spans)
+                if pending_kind == "open" and len(text) < 90:
+                    kind = "open_end"  # e.g. "INTRODUCTION" after a separate "I." line
+                elif not toc and re.fullmatch(r"[IVX]{1,5}\.|[A-H]\.", text):
+                    kind = "open"
+                elif (_key(text) in heading_keys or (NUMBERED_HEADING.match(text) and styled and len(text) < 120)
+                        or (not toc and LETTERED_HEADING.match(text) and len(text) < 90)):
+                    kind = "heading"  # a known section line always starts its own block
+                elif not toc and all_bold:
+                    kind = "bold"     # consecutive bold lines stay together (titles, abstracts)
+                else:
+                    kind = "body"
+                if kind == "open_end":
+                    pending.append(line)
+                    flush()
+                    pending_kind = None
+                    continue
+                if kind in ("heading", "open") or kind != pending_kind:
+                    flush()
+                pending.append(line)
+                pending_kind = kind
+                if kind == "heading":
+                    flush()
+                    pending_kind = None
+            flush()
+        infos = [i for b in blocks
+                 if (i := _block_info(b)) is not None]
+        merged: list[dict] = []
+        for info in infos:
+            prev = merged[-1] if merged else None
+            if (prev is not None and not toc and info["size"] >= median * 1.18
+                    and abs(prev["size"] - info["size"]) < .5 and prev["bold"] == info["bold"]
+                    and 0 <= info["rect"].y0 - prev["rect"].y1 < info["size"] * 2
+                    and not (info["rect"].x1 < prev["rect"].x0 or info["rect"].x0 > prev["rect"].x1)
+                    and not _join(prev["lines"]).endswith(TERMINAL)):
+                prev["lines"] += info["lines"]  # pull quotes and sidebar titles split into one block per line
+                prev["rect"] = prev["rect"] | info["rect"]
+                continue
+            merged.append(info)
+        infos = merged
+        masthead = any("contentslistsavailable" in _key(_join(i["lines"]))
+                       or "journalhomepage" in _key(_join(i["lines"])) for i in infos)
+        for index, info in enumerate(infos):
+            text, r = _join(info["lines"]), info["rect"]
+            info.update(source_id=index, text=text, role="body", level=0)
+            margin = (r.y1 < page.rect.height * .07 or r.y0 > page.rect.height * .94) and r.height < 35
+            publication = pno == 0 and (
+                (masthead and r.y1 < page.rect.height * .18)
+                or (r.y0 > page.rect.height * .80 and re.search(
+                    r"corresponding author|e-?mail address|https?://doi\.org|received\s|available online|©|all rights",
+                    text, re.I)))
+            contact = r.y0 > page.rect.height * .55 and re.search(
+                r"corresponding author|e-?mail addresses?:", text, re.I)
+            if margin or publication or contact:
+                info["role"] = "noise"
+                continue
+            if (r.y0 > page.rect.height * .6 and info["size"] < median * .95
+                    and re.match(r"^(\*|†|‡|§|¶|[¹²³⁴⁵⁶⁷⁸⁹]|\d{1,2}\s)", text)):
+                info["role"] = "note"  # footnote: shown after the paragraph it interrupts
+                continue
+            for level, label, target_page in toc:
+                k, label_key = _key(text), _key(label)
+                if target_page == pno + 1 and (k == label_key or
+                        (level == 1 and len(label_key) > 60 and k.startswith(label_key))):
+                    info.update(role="title" if level == 1 and pno == 0 else "heading", level=level,
+                                source_heading=label)
+                    break
+            if info["role"] == "body" and len(text) < 160 and len(info["lines"]) <= 3:
+                number = NUMBERED_HEADING.match(text)
+                lettered = LETTERED_HEADING.match(text)
+                table_row = sum(1 for o in infos if o is not info and abs(o["rect"].y0 - r.y0) < 3
+                                and len(_join(o["lines"])) < 40) >= 1
+                if number and (info["bold"] or info["italic"]):
+                    info.update(role="heading", level=min(5, number[1].count(".") + 2), source_heading=text)
+                elif _key(text) in {"abstract", "references", "conclusion", "conclusions", "acknowledgements", "acknowledgments"}:
+                    info.update(role="heading", level=2, source_heading=text)
+                elif not toc and lettered and len(text) <= 90 and not table_row:
+                    info.update(role="heading", level=2 if len(lettered[1]) > 1 or lettered[1] == "I" else 3,
+                                source_heading=text)
+                elif (not toc and len(text) <= 90 and len(info["lines"]) <= 2 and not text.endswith(TERMINAL)
+                      and not table_row and sum(c.isalpha() for c in text) >= 4
+                      and (info["bold"] or info["colored"] or info["size"] >= median * 1.18)):
+                    info.update(role="heading", level=2 if info["size"] >= median * 1.18 else 3,
+                                source_heading=text)
+        if pno == 0 and not any(i["role"] == "title" for i in infos):
+            candidates = [i for i in infos if i["role"] != "noise" and len(i["text"]) > 25
+                          and i["rect"].y0 < page.rect.height * .40]
+            if candidates:
+                title = max(candidates, key=lambda i: i["size"])
+                title.update(role="title", level=1, source_heading=title["text"])
+        result.append(infos)
+    return result
+
+
+def _source_match(rect: pymupdf.Rect, infos: list[dict]) -> dict | None:
+    candidates = []
+    for info in infos:
+        r = info["rect"]
+        overlap = (rect & r).get_area() / max(rect.get_area(), 1)
+        if overlap > .35:
+            candidates.append((overlap, -abs((r.y0 + r.y1) / 2 - (rect.y0 + rect.y1) / 2), info))
+    return max(candidates, key=lambda c: c[:2])[2] if candidates else None
+
+
+def _split_by_source(block: dict, sources: list[dict]) -> list[dict]:
+    """A translated PDF block can contain both a section heading and body lines."""
+    if not sources:
+        return [block]
+    groups = []
+    for line in block.get("lines", []):
+        source = _source_match(pymupdf.Rect(line["bbox"]), sources)
+        key = source["source_id"] if source else None
+        if groups and groups[-1][0] == key:
+            groups[-1][1].append(line)
+        else:
+            groups.append((key, [line]))
+    result = []
+    for _, lines in groups:
+        rect = pymupdf.Rect(lines[0]["bbox"])
+        for line in lines[1:]:
+            rect |= pymupdf.Rect(line["bbox"])
+        result.append({"type": 0, "bbox": tuple(rect), "lines": lines})
+    return result
 
 
 def _join(parts: list[str]) -> str:
@@ -40,7 +233,7 @@ def _is_dark(color: int) -> bool:
 
 
 def _block_info(block: dict) -> dict | None:
-    lines, size, bold_chars, color_chars, chars = [], 0.0, 0, 0, 0
+    lines, size, bold_chars, italic_chars, color_chars, chars = [], 0.0, 0, 0, 0, 0
     for line in block.get("lines", []):
         dx, dy = line.get("dir", (1, 0))
         if abs(dx - 1) > 0.05 or abs(dy) > 0.05:
@@ -52,13 +245,16 @@ def _block_info(block: dict) -> dict | None:
             size = max(size, sp["size"])
             if sp["flags"] & 16 or "bold" in sp.get("font", "").lower():
                 bold_chars += n
+            if sp["flags"] & 2 or "italic" in sp.get("font", "").lower():
+                italic_chars += n
             if not _is_dark(sp.get("color", 0)):
                 color_chars += n
         lines.append(t)
     if not lines or chars == 0:
         return None
     return {"rect": pymupdf.Rect(block["bbox"]), "lines": lines, "size": size,
-            "bold": bold_chars / chars > 0.8, "colored": color_chars / chars > 0.8}
+            "bold": bold_chars / chars > 0.8, "italic": italic_chars / chars > 0.8,
+            "colored": color_chars / chars > 0.8}
 
 
 def _merge_adjacent(infos: list[dict]) -> list[dict]:
@@ -71,12 +267,11 @@ def _merge_adjacent(infos: list[dict]) -> list[dict]:
             same_style = abs(b["size"] - p["size"]) < 0.8 and b["bold"] == p["bold"] and b["colored"] == p["colored"]
             same_col = abs(r.x0 - q.x0) < 8 or (r.x0 >= q.x0 - 8 and r.x1 <= q.x1 + 8)
             gap = r.y0 - q.y1
-            # 短い 1 行の後に本文が続く場合は小見出しとみなしてつながない
-            lone_heading = (len(p["lines"]) == 1 and len(_join(p["lines"])) <= 40
-                            and not _join(p["lines"]).endswith(TERMINAL) and q.width < 0.6 * r.width)
-            if lone_heading:
-                p["heading"] = True
-            if same_style and same_col and not lone_heading and -2 <= gap < p["size"] * 0.9:
+            same_source = b.get("source_id") == p.get("source_id")
+            if same_source and b.get("source_id") is not None:
+                same_col = True  # 原文の同じ段落内の字下げ・折り返しを許容
+                same_style = True  # 訳文の書体・文字サイズの揺れでも原文の1段落は分けない
+            if same_style and same_col and same_source and -2 <= gap < p["size"] * 0.9:
                 p["lines"] += b["lines"]
                 p["rect"] = q | r
                 continue
@@ -165,6 +360,7 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
     fig_dir.mkdir(parents=True, exist_ok=True)
     doc = pymupdf.open(str(mono_pdf))
     orig = pymupdf.open(str(original_pdf)) if original_pdf.exists() else None
+    source_pages = _source_layout(orig) if orig is not None else []
 
     pages = []
     sizes: list[float] = []
@@ -183,6 +379,7 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
     title = ""
     title_size = 0.0
     fig_no = 0
+    notes: list[dict] = []
     for pno, (page, blocks) in enumerate(zip(doc, pages)):
         H = page.rect.height
         items.append({"t": "page", "page": pno + 1})
@@ -191,6 +388,7 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
         placed = [False] * len(figs)
         orig_blocks = []
         used_orig: set[int] = set()
+        sources = source_pages[pno] if pno < len(source_pages) else []
         if orig is not None and pno < orig.page_count:
             orig_blocks = [b for b in orig[pno].get_text("blocks") if b[6] == 0]
 
@@ -211,9 +409,8 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                     items.append({"t": "fig", "src": name, "page": pno + 1, "w": size[0], "h": size[1]})
 
         infos = []
-        for b in blocks:
-            if b["type"] != 0:
-                continue
+        text_blocks = [part for b in blocks if b["type"] == 0 for part in _split_by_source(b, sources)]
+        for b in text_blocks:
             info = _block_info(b)
             if info is None:
                 continue
@@ -221,6 +418,12 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
             text = _join(info["lines"])
             if len(text.strip()) < 1:
                 continue
+            source = _source_match(rect, sources)
+            if source:
+                if source["role"] == "noise":
+                    continue
+                info.update(source_id=source["source_id"], role=source["role"], level=source["level"],
+                            source_heading=source.get("source_heading", ""), source_text=source["text"])
             if (rect.y1 < 0.07 * H or rect.y0 > 0.93 * H) and len(text) < 140:
                 continue  # ヘッダー・フッター
             center = pymupdf.Point((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)
@@ -236,7 +439,12 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
             place_figs_before(rect.y0, rect.x0, rect.x1)
 
             original = ""
-            if orig_blocks:
+            if info.get("source_text"):
+                source_id = info["source_id"]
+                if source_id not in used_orig:
+                    original = info["source_text"]
+                    used_orig.add(source_id)
+            elif orig_blocks and not sources:
                 hits = []
                 for i, ob in enumerate(orig_blocks):
                     if i in used_orig:
@@ -260,21 +468,24 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                 kind = "eq"
             elif CAPTION_RE.match(text) and len(text) < 400:
                 kind = "cap"
-            elif size >= median * 1.18 and short and len(text) >= 2:
+            elif info.get("role") in ("title", "heading"):
+                kind = "h2" if info.get("level", 2) <= 2 else "h3"
+            elif info.get("role") == "note":
+                kind = "note"
+            elif not sources and short and NUMBERED_HEADING.match(text) and (info["bold"] or info["italic"]):
                 kind = "h2"
-            elif info["colored"] and short and len(text) <= 70:
-                kind = "h2"
-            elif info["bold"] and len(text) <= 60 and not text.endswith("。"):
-                kind = "h3"
-            elif info.get("heading") and len(text) <= 40 and not text.endswith(TERMINAL):
-                kind = "h3"
             else:
                 kind = "p"
-            if pno == 0 and kind == "h2" and size > title_size and len(text) < 160:
+            if info.get("role") == "title":
+                title = text
+            elif not sources and pno == 0 and kind == "h2" and size > title_size and len(text) < 160:
                 title_size, title = size, text
 
             prev = next((it for it in reversed(items) if it["t"] != "page"), None)
             adjacent = items and (items[-1] is prev or items[-1]["t"] == "page")
+            if kind == "note":
+                notes.append({"t": "note", "text": text, "page": pno + 1, **({"orig": original} if original else {})})
+                continue
             # 数式の断片はまとめる
             if kind == "eq" and prev is not None and prev["t"] == "eq" and adjacent:
                 prev["text"] += " " + text
@@ -283,16 +494,22 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
             # 段や改ページで切れた段落はつなぐ
             if (kind == "p" and prev is not None and prev["t"] == "p" and adjacent
                     and not prev["text"].endswith(TERMINAL)
-                    and (len(prev["text"]) > 80 or text[:1] in CONTINUATION)):
+                    and (len(prev["text"]) > 80 or text[:1] in CONTINUATION or items[-1]["t"] == "page")):
                 prev["text"] = _join([prev["text"], text])
                 if original and original not in prev.get("orig", ""):
                     prev["orig"] = _join([prev.get("orig", ""), original])
                 continue
             item = {"t": kind, "text": text, "page": pno + 1}
+            if kind in ("h2", "h3"):
+                item["text"] = _tidy_heading(text)
+                item.update(level=info.get("level", 2), source_heading=info.get("source_heading", text),
+                            x=rect.x0, y=rect.y0)
             if kind == "eq":
                 item["_rect"] = pymupdf.Rect(rect)
             if original and kind != "eq":
                 item["orig"] = original
+            items.extend(notes)
+            notes.clear()
             items.append(item)
         place_figs_before(0, 0, 0, force=True)
         for it in items:
@@ -304,10 +521,22 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                 pix.save(str(fig_dir / name))
                 it.update({"src": name, "w": pix.width, "h": pix.height})
 
-    return {"title": title, "items": items}
+    items.extend(notes)
+    source_toc = orig.get_toc() if orig is not None else []
+    doc.close()
+    if orig is not None:
+        orig.close()
+    return {"version": READING_VERSION, "title": title, "items": items, "source_toc": source_toc}
 
 
 def write_reading(mono_pdf: Path, original_pdf: Path, out_dir: Path) -> dict:
+    from .pdf_outline import write_outline
+
     data = build_reading(mono_pdf, original_pdf, out_dir / "figs")
-    (out_dir / "reading.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    write_outline(mono_pdf, mono_pdf, data)
+    if (out_dir / "dual.pdf").exists():
+        write_outline(out_dir / "dual.pdf", mono_pdf, data)
+    tmp = out_dir / "reading.tmp.json"
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(out_dir / "reading.json")
     return data
