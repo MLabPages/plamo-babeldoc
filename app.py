@@ -18,6 +18,44 @@ import urllib.request
 from paperapp.config import LOCAL_PORT, SHARE_PORT, load_settings
 from paperapp.server import App
 
+
+class Api:
+    """画面の JavaScript から呼ぶ機能（window.pywebview.api）。"""
+
+    def __init__(self) -> None:
+        # 先頭の "_" で、pywebview が画面へ公開する対象から外す（窓オブジェクトをたどると固まる）
+        self._window = None
+
+    def save_pdf(self, doc_id: str, kind: str, engine: str) -> dict:
+        import shutil
+
+        from paperapp.server import ID_RE, LIBRARY_DIR, pdf_download_name, pdf_path
+
+        try:
+            if not ID_RE.match(doc_id or ""):
+                raise KeyError(doc_id)
+            doc_dir = LIBRARY_DIR / doc_id
+            src = pdf_path(doc_dir, kind, engine)
+            if not src.exists():
+                return {"error": "PDFが見つかりません。"}
+            meta = json.loads((doc_dir / "meta.json").read_text(encoding="utf-8"))
+            import webview
+
+            chosen = self._window.create_file_dialog(
+                webview.FileDialog.SAVE, save_filename=pdf_download_name(meta, kind),
+                file_types=("PDF (*.pdf)",))
+            if not chosen:
+                return {}
+            dest = chosen[0] if isinstance(chosen, (list, tuple)) else chosen
+            if not str(dest).lower().endswith(".pdf"):
+                dest = str(dest) + ".pdf"
+            shutil.copyfile(src, dest)
+            return {"saved": str(dest)}
+        except KeyError:
+            return {"error": "PDFが見つかりません。"}
+        except OSError as e:
+            return {"error": f"保存できませんでした: {e}"}
+
 ICON = __import__("pathlib").Path(__file__).resolve().parent / "assets" / "app.ico"
 
 
@@ -82,7 +120,10 @@ def main() -> None:
         else:
             import webview
 
-            window = webview.create_window("PLaMo 論文リーダー", url, width=1320, height=900, min_size=(760, 560))
+            api = Api()
+            window = webview.create_window("PLaMo 論文リーダー", url, width=1320, height=900, min_size=(760, 560),
+                                           js_api=api)
+            api._window = window
             window.events.shown += lambda: set_window_icon(window)
             webview.start(private_mode=False)
     except KeyboardInterrupt:

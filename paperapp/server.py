@@ -51,6 +51,26 @@ def stage_label(stage: str) -> str:
     return "処理中"
 
 
+PDF_FILES = {"translated": "translated.pdf", "dual": "dual.pdf"}
+
+
+def pdf_path(doc_dir: Path, kind: str, engine: str) -> Path:
+    """Path of the original, translated or bilingual PDF of a library document."""
+    if kind == "original":
+        return doc_dir / "original.pdf"
+    if kind not in PDF_FILES or engine not in ENGINES:
+        raise KeyError(kind)
+    return doc_dir / "out" / engine / PDF_FILES[kind]
+
+
+def pdf_download_name(meta: dict, kind: str) -> str:
+    """Readable file name for saving, e.g. "Tan et al. (2024) - Pet Robot_日本語訳.pdf"."""
+    stem = Path(meta.get("filename") or meta.get("title") or "paper").stem
+    stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", stem).strip(" .") or "paper"
+    suffix = {"translated": "_日本語訳", "dual": "_対訳", "original": ""}[kind]
+    return stem[:150] + suffix + ".pdf"
+
+
 class Library:
     def __init__(self) -> None:
         LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
@@ -381,11 +401,17 @@ def make_handler(app: App):
                 raise ValueError("ファイルが大きすぎます。")
             return self.rfile.read(n)
 
-        def _file(self, path: Path, ctype: str | None = None):
+        def _file(self, path: Path, ctype: str | None = None, download: str | None = None):
             if not path.exists() or not path.is_file():
                 return self._err(404, "見つかりません")
             ctype = ctype or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-            self._send(200, path.read_bytes(), ctype)
+            extra = None
+            if download:
+                # ブラウザ・iPad の Safari で「保存」できるよう、添付ファイルとして返す
+                ascii_name = download.encode("ascii", "replace").decode().replace("?", "_").replace('"', "_")
+                extra = {"Content-Disposition": f"attachment; filename=\"{ascii_name}\"; "
+                                                f"filename*=UTF-8''{urllib.parse.quote(download)}"}
+            self._send(200, path.read_bytes(), ctype, extra)
 
         # ---------- ルーティング ----------
         def do_HEAD(self):
@@ -451,7 +477,8 @@ def make_handler(app: App):
                     if len(parts) == 2:
                         return self._json(app.library.meta(doc_id))
                     if parts[2] == "original":
-                        return self._file(d / "original.pdf", "application/pdf")
+                        name = pdf_download_name(app.library.meta(doc_id), "original") if q.get("dl") else None
+                        return self._file(d / "original.pdf", "application/pdf", name)
                     if len(parts) >= 4 and parts[2] in ("translated", "dual", "reading", "fig"):
                         kind, engine = parts[2], parts[3]
                         if engine not in ENGINES:
@@ -459,10 +486,9 @@ def make_handler(app: App):
                         out = d / "out" / engine
                         if kind in ("translated", "dual", "reading"):
                             ensure_reading(d, out)
-                        if kind == "translated":
-                            return self._file(out / "translated.pdf", "application/pdf")
-                        if kind == "dual":
-                            return self._file(out / "dual.pdf", "application/pdf")
+                        if kind in PDF_FILES:
+                            name = pdf_download_name(app.library.meta(doc_id), kind) if q.get("dl") else None
+                            return self._file(pdf_path(d, kind, engine), "application/pdf", name)
                         if kind == "reading":
                             return self._file(out / "reading.json", "application/json; charset=utf-8")
                         if kind == "fig" and len(parts) == 5 and re.fullmatch(r"p\d+_\d+\.png", parts[4]):

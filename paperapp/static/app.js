@@ -286,6 +286,24 @@ function setMode(mode) {
 }
 $("#tabs").addEventListener("click", (e) => { if (e.target.dataset.mode) setMode(e.target.dataset.mode); });
 
+// PDF の保存。アプリの窓では Windows の保存ダイアログ、ブラウザ・iPad ではダウンロードにする
+async function savePdf(kind) {
+  const api = window.pywebview && window.pywebview.api;
+  if (api && api.save_pdf) {
+    try {
+      const r = await api.save_pdf(cur.id, kind, cur.engine);
+      if (r && r.saved) toast("保存しました: " + r.saved);
+      else if (r && r.error) toast(r.error);
+    } catch (e) { toast("保存できませんでした: " + (e.message || e)); }
+    return;
+  }
+  const a = document.createElement("a");
+  a.href = fileUrl("/doc/" + cur.id + "/" + kind + (kind === "original" ? "" : "/" + cur.engine)) + "&dl=1";
+  a.download = "";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+$("#pdfSave").addEventListener("click", () => savePdf(cur.mode === "dual" ? "dual" : "translated"));
+
 $("#btnBack").addEventListener("click", () => {
   savePos(); ttsStop(); document.body.classList.remove("focus", "show-bar");
   $("#reader").classList.add("hidden"); $("#home").classList.remove("hidden");
