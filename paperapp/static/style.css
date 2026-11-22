@@ -110,7 +110,27 @@ body.focus .tts:hover,body.focus.show-bar .tts{opacity:1}
   .tts select{max-width:110px}
   .doc-title{display:none}
 }
-@media (max-width:560px){ .tts select,.tts .rate{display:none} }
+@media (max-width:560px){
+  /* iPhone などの狭い画面：文字を1字ずつ縦に折り返さず、入り切らない部品は2段目へ */
+  button,.btn,.tabs button,.engine{white-space:nowrap}
+  .brand{white-space:nowrap;font-size:16px}
+  .bar>.ghost{padding:6px 8px}
+  .drop{padding:20px 14px}
+  .engine{width:100%;justify-content:center}
+  .engine select{flex:1;min-width:0;max-width:320px}
+  .engine.check{white-space:normal}
+  .reader-bar{flex-wrap:wrap;gap:6px;padding-left:10px;padding-right:10px}
+  .reader-bar .ghost{padding:6px 8px}
+  .reader-bar .tabs{margin-left:auto}
+  .tabs button{padding:6px 11px}
+  #readEngine{order:10;flex:1 1 100%;max-width:none;min-height:34px;padding:5px 10px}
+  .tts{flex-wrap:wrap;justify-content:center;white-space:normal;width:calc(100vw - 20px);row-gap:6px}
+  .tts .rate{display:flex}
+  .tts .rate input{width:90px}
+  .tts select{flex:1;min-width:0;max-width:none}
+  .read-pane{padding-bottom:210px}
+  .pdf-actions{left:10px;right:10px;justify-content:flex-end}
+}
 @media (pointer:coarse){ article p{cursor:default} }
 .engine.check{gap:6px;cursor:pointer}
 .privacy{max-width:640px;margin:12px auto 0;line-height:1.7}

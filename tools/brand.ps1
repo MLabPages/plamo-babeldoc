@@ -1,7 +1,7 @@
 ﻿# .venv\Scripts\PLaMoPaperReader.exe（説明欄とアイコンをアプリ名にした Python）を作る。
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$version = '1.0.4'
+$version = '1.0.5'
 $cfg = Join-Path $root '.venv\pyvenv.cfg'
 if (-not (Test-Path $cfg)) { throw 'Python 環境（.venv）がありません。' }
 $homeLine = Get-Content $cfg | Where-Object { $_ -match '^\s*home\s*=' } | Select-Object -First 1
