@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .config import LIBRARY_DIR, ROOT, SHARE_PORT, STATIC_DIR, load_settings, replace_file, save_settings
 from .engines import NO_WINDOW, LlamaManager
-from .envkeys import env_for_child, get_env
+from .envkeys import env_for_child, get_env, set_user_env
 from .registry import ENGINES as REGISTRY
 from .registry import PlamoEngine, engine_label, engine_list
 from .reading import reading_is_current, write_reading
@@ -324,12 +324,46 @@ def lan_ip() -> str:
         return "127.0.0.1"
 
 
+def _is_tailscale(ip: str) -> bool:
+    parts = ip.split(".")
+    return len(parts) == 4 and parts[0] == "100" and 64 <= int(parts[1]) <= 127
+
+
+def tailscale_ip() -> str | None:
+    """IPv4 address on the user's Tailscale network (100.64.0.0/10), if Tailscale is running."""
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            if _is_tailscale(info[4][0]):
+                return info[4][0]
+    except OSError:
+        pass
+    exe = shutil.which("tailscale") or r"C:\Program Files\Tailscale\tailscale.exe"
+    if not os.path.exists(exe):
+        return None
+    try:
+        out = subprocess.run([exe, "ip", "-4"], capture_output=True, text=True, timeout=3,
+                             creationflags=NO_WINDOW).stdout
+        ip = next((x.strip() for x in out.splitlines() if _is_tailscale(x.strip())), None)
+        return ip
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def key_names() -> set[str]:
+    """Environment variable names that the settings screen may write (API keys and endpoints)."""
+    names: set[str] = set()
+    for engine in REGISTRY.values():
+        names |= set(engine.env_required) | set(engine.env_optional)
+    return names
+
+
 class App:
     def __init__(self) -> None:
         self.library = Library()
         self.llama = LlamaManager()
         self.jobs = Jobs(self.library, self.llama)
         self.share_server: ThreadingHTTPServer | None = None
+        self.share_port = SHARE_PORT
         self.local_server: ThreadingHTTPServer | None = None
 
     @property
@@ -339,12 +373,26 @@ class App:
     def share_info(self) -> dict:
         if not self.share_server:
             return {"enabled": False}
-        url = f"http://{lan_ip()}:{SHARE_PORT}/?t={self.token}"
-        return {"enabled": True, "url": url}
+        url = f"http://{lan_ip()}:{self.share_port}/?t={self.token}"
+        ts = tailscale_ip()
+        remote = f"http://{ts}:{self.share_port}/?t={self.token}" if ts else None
+        return {"enabled": True, "url": url, "remote_url": remote}
 
     def set_share(self, enable: bool) -> dict:
         if enable and not self.share_server:
-            self.share_server = ThreadingHTTPServer(("0.0.0.0", SHARE_PORT), make_handler(self))  # noqa: S104
+            last: OSError | None = None
+            # 8766 が他のアプリ（論文PDFファイル名整理など）に使われていたら、次の空きポートを使う
+            for port in range(SHARE_PORT, SHARE_PORT + 20):
+                if self.local_server and port == self.local_server.server_address[1]:
+                    continue
+                try:
+                    self.share_server = ThreadingHTTPServer(("0.0.0.0", port), make_handler(self))  # noqa: S104
+                    self.share_port = port
+                    break
+                except OSError as e:
+                    last = e
+            else:
+                raise last or OSError("空いているポートがありません")
             threading.Thread(target=self.share_server.serve_forever, daemon=True).start()
         elif not enable and self.share_server:
             self.share_server.shutdown()
@@ -433,6 +481,10 @@ def make_handler(app: App):
                     ctype = f"text/{target.suffix[1:]}; charset=utf-8"
                 return self._file(target, ctype)
             if not self._authed(q):
+                try:  # 送られてきた本文を読み捨ててから断る（読まずに閉じると接続エラーになる）
+                    self._body(64 * 1024)
+                except ValueError:
+                    self.close_connection = True
                 return self._err(401, "アクセス用のリンクが正しくありません。")
             parts = path.strip("/").split("/")[1:]
             try:
@@ -451,12 +503,15 @@ def make_handler(app: App):
                     info = app.share_info()
                     if not info.get("enabled"):
                         return self._err(404, "共有していません")
+                    target = info.get("remote_url") if (q.get("which") or [""])[0] == "remote" else info["url"]
+                    if not target:
+                        return self._err(404, "外出先用のアドレスがありません")
                     import io
 
                     import segno
 
                     buf = io.BytesIO()
-                    segno.make(info["url"], error="m").save(buf, kind="svg", scale=6, border=2)
+                    segno.make(target, error="m").save(buf, kind="svg", scale=6, border=2)
                     return self._send(200, buf.getvalue(), "image/svg+xml")
                 if parts == ["gemini", "models"]:
                     key = get_env("GEMINI_API_KEY")
@@ -552,6 +607,20 @@ def make_handler(app: App):
                         return self._err(403, "共有の設定はPCの画面から行ってください。")
                     body = json.loads(self._body(1024) or b"{}")
                     return self._json(app.set_share(bool(body.get("enable"))))
+                if parts == ["keys"]:
+                    # API キーはこのPCの画面からだけ設定できる（iPad 共有の窓口からは不可）
+                    if self.client_address[0] != "127.0.0.1" or self.server is not app.local_server:
+                        return self._err(403, "APIキーはPCの画面から設定してください。")
+                    body = json.loads(self._body(4096) or b"{}")
+                    name, value = body.get("name"), body.get("value")
+                    if name not in key_names():
+                        return self._err(400, "設定できない項目です。")
+                    if value is not None:
+                        value = str(value).strip()
+                        if not value or len(value) > 512 or any(ord(c) < 32 for c in value):
+                            return self._err(400, "キーの形式が正しくありません。")
+                    set_user_env(name, value or None)
+                    return self._json({"ok": True, "set": bool(value)})
                 return self._err(404, "見つかりません")
             except KeyError:
                 return self._err(404, "見つかりません")

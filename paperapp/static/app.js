@@ -118,17 +118,23 @@ $("#btnSettings").addEventListener("click", async () => {
   await loadState();
   const s = state.settings;
   const rows = state.engines.map((e) => {
-    const envs = e.env.map((v) => '<code class="' + (v.set ? "set" : v.required ? "unset" : "opt") + '">' + esc(v.name) + (v.set ? " ✓" : v.required ? " 未設定" : "（任意）") + "</code>").join(" ");
+    const envs = e.env.map((v) => state.is_local ?
+      '<div class="key-row"><label for="key-' + esc(v.name) + '"><code class="' + (v.set ? "set" : v.required ? "unset" : "opt") + '">' + esc(v.name) + "</code>" +
+        (v.set ? " 設定済み" : v.required ? " 未設定" : "（任意）") + "</label>" +
+        '<input type="password" id="key-' + esc(v.name) + '" data-key="' + esc(v.name) + '" autocomplete="off" spellcheck="false" placeholder="' +
+        (v.set ? "変更するときだけ入力" : v.required ? "APIキーを貼り付け" : "必要なときだけ入力") + '">' +
+        '<button data-key-save="' + esc(v.name) + '">保存</button>' + (v.set ? '<button data-key-del="' + esc(v.name) + '">削除</button>' : "") + "</div>"
+      : '<code class="' + (v.set ? "set" : v.required ? "unset" : "opt") + '">' + esc(v.name) + (v.set ? " ✓" : v.required ? " 未設定" : "（任意）") + "</code>").join(state.is_local ? "" : " ");
     return '<div class="eng-row"><div class="eng-head"><b>' + esc(e.label) + "</b> " + privacyBadge(e) +
       '<span class="grow"></span><span class="' + (e.available ? "st ok" : "st") + '">' + (e.available ? "使えます" : "未設定") + "</span></div>" +
       '<div class="eng-priv">' + esc(e.privacy) + (e.privacy_url ? ' <a href="' + esc(e.privacy_url) + '" target="_blank" rel="noopener">公式の説明</a>' : "") + "</div>" +
-      (envs ? '<div class="eng-env">' + envs + "</div>" : "") + "</div>";
+      (envs ? '<div class="' + (state.is_local ? "eng-keys" : "eng-env") + '">' + envs + "</div>" : "") + "</div>";
   }).join("");
   const gem = state.engines.find((e) => e.id === "gemini");
   modal('<h3>翻訳エンジンとデータの扱い</h3>' + rows +
-    '<p class="note">APIキーは環境変数で渡します（このアプリには保存しません）。PowerShellで次のように設定し、この画面を開き直すと反映されます。<br><code>setx DEEPL_API_KEY "キー"</code></p>' +
+    '<p class="note">APIキーはWindowsのユーザー環境変数に保存します（このアプリのファイルには書きません）。PowerShellの <code>setx</code> で設定した値も使えます。</p>' +
     '<label for="gModel">Geminiのモデル（一覧から選ぶか、モデル名を直接入力）</label><input type="text" id="gModel" list="gModels" value="' + esc(s.gemini_model) + '" autocomplete="off" spellcheck="false"><datalist id="gModels"></datalist>' +
-    '<div class="modal-actions"><span class="grow"></span><button data-close>閉じる</button><button class="primary" id="gSave">保存</button></div>');
+    '<div class="modal-actions"><span class="grow"></span><button data-close>閉じる</button><button class="primary" id="gSave">モデル名を保存</button></div>');
   if (gem && gem.available) {
     api("/gemini/models").then((list) => {
       $("#gModels").innerHTML = list.map((m) => '<option value="' + esc(m) + '">').join("");
@@ -140,19 +146,40 @@ $("#btnSettings").addEventListener("click", async () => {
       closeModal(); await loadState(); toast("保存しました");
     } catch (e) { toast(e.message); }
   };
+  const saveKey = async (name, value) => {
+    try {
+      await api("/keys", {method: "POST", body: JSON.stringify({name, value})});
+      toast(value ? name + " を保存しました" : name + " を削除しました");
+      $("#btnSettings").click();  // 状態を読み直して画面を更新
+    } catch (e) { toast(e.message); }
+  };
+  document.querySelectorAll("[data-key-save]").forEach((b) => b.onclick = () => {
+    const v = document.querySelector('[data-key="' + b.dataset.keySave + '"]').value.trim();
+    if (!v) { toast("キーを入力してください"); return; }
+    saveKey(b.dataset.keySave, v);
+  });
+  document.querySelectorAll("[data-key-del]").forEach((b) => b.onclick = () => {
+    if (confirm(b.dataset.keyDel + " を削除しますか？")) saveKey(b.dataset.keyDel, null);
+  });
 });
 
 async function showShare() {
   const info = state.share;
   if (!info.enabled) {
     modal('<h3>iPadで読む</h3><p>このPCとiPadを同じWi‑Fiにつなぐと、iPadのSafariでライブラリと読書モードを使えます。翻訳はこのPCで動きます。</p>' +
+      '<p>外出先から読むときは、PCとiPadの両方に <a href="https://tailscale.com/download" target="_blank" rel="noopener">Tailscale</a>（自分の端末どうしだけをつなぐ無料のVPN）を入れ、同じアカウントでログインしておきます。共有を始めると、外出先用のQRコードも表示します。</p>' +
       '<p class="note">開始するとWindowsのファイアウォール確認が出ることがあります。「プライベート ネットワーク」を許可してください。アプリを閉じると共有も止まります。</p>' +
       '<div class="modal-actions"><button data-close>閉じる</button><button class="primary" id="shareOn">共有を開始</button></div>');
     $("#shareOn").onclick = async () => { try { state.share = await api("/share", {method: "POST", body: JSON.stringify({enable: true})}); showShare(); } catch (e) { toast(e.message); } };
   } else {
+    const remote = info.remote_url ?
+      '<h4>外出先から（Tailscale）</h4><img class="qr" src="' + fileUrl("/share/qr.svg") + "&which=remote&r=" + Date.now() + '" alt="外出先用のQRコード"><div class="url">' + esc(info.remote_url) + "</div>" +
+      '<p class="note">iPadでもTailscaleを起動してから開いてください。PCがスリープしていると開けません。</p>'
+      : '<p class="note">外出先から読むには、PCとiPadに <a href="https://tailscale.com/download" target="_blank" rel="noopener">Tailscale</a> を入れて同じアカウントでログインし、この画面を開き直してください。</p>';
     modal('<h3>iPadで読む</h3><p>iPadのカメラでQRコードを読み取ってください。Safariで開いたら、共有メニューの「ホーム画面に追加」でアプリのように使えます。</p>' +
+      (info.remote_url ? "<h4>同じWi‑Fiで</h4>" : "") +
       '<img class="qr" src="' + fileUrl("/share/qr.svg") + "&r=" + Date.now() + '" alt="QRコード"><div class="url">' + esc(info.url) + "</div>" +
-      '<p class="note">このリンクを知っている同じネットワーク内の端末だけが開けます。</p>' +
+      '<p class="note">このリンク（合言葉入り）を知っている端末だけが開けます。</p>' + remote +
       '<div class="modal-actions"><button id="shareOff">共有を止める</button><span class="grow"></span><button class="primary" data-close>閉じる</button></div>');
     $("#shareOff").onclick = async () => { state.share = await api("/share", {method: "POST", body: JSON.stringify({enable: false})}); closeModal(); toast("共有を止めました"); };
   }

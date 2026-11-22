@@ -40,3 +40,32 @@ def env_for_child(names: list[str]) -> dict:
         if v:
             env[n] = v
     return env
+
+
+def set_user_env(name: str, value: str | None) -> None:
+    """Save (or delete when value is None) a Windows user environment variable.
+
+    設定画面から入力した API キーを、setx と同じユーザー環境変数に保存する。
+    アプリのファイルや設定には書かない。
+    """
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as k:
+        if value:
+            winreg.SetValueEx(k, name, 0, winreg.REG_SZ, value)
+        else:
+            try:
+                winreg.DeleteValue(k, name)
+            except FileNotFoundError:
+                pass
+    if value:
+        os.environ[name] = value
+    else:
+        os.environ.pop(name, None)  # 起動時に受け継いだ値も使わない
+    try:  # 開いているほかのアプリにも変更を知らせる（WM_SETTINGCHANGE）
+        import ctypes
+
+        result = ctypes.c_ulong()
+        ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 0x0002, 2000, ctypes.byref(result))
+    except Exception:  # noqa: BLE001
+        pass

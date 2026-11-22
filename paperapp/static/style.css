@@ -124,6 +124,12 @@ body.focus .tts:hover,body.focus.show-bar .tts{opacity:1}
 .eng-head .st.ok{color:#2e7d32}
 .eng-priv{font-size:12.5px;color:var(--sub);margin-top:4px;line-height:1.6}
 .eng-env{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
+.eng-keys{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+.key-row{display:grid;grid-template-columns:minmax(170px,1fr) minmax(0,1.3fr) auto auto;gap:6px;align-items:center}
+.key-row label{font-size:12px;margin:0}
+.key-row input{margin:0;min-width:0}
+.key-row button{font-size:12px;min-height:30px;padding:4px 10px}
+.modal-box h4{margin:14px 0 4px;font-size:14px}
 .modal-box code{font-family:Consolas,monospace;font-size:12px;padding:1px 6px;border-radius:6px;background:var(--paper);border:1px solid var(--line)}
 .modal-box code.set{color:#2e7d32}
 .modal-box code.unset{color:#b3261e}
