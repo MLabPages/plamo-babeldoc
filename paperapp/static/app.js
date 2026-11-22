@@ -200,13 +200,15 @@ async function showShare() {
   if (!info.enabled) {
     modal('<h3>iPadで読む</h3><p>このPCとiPadを同じWi‑Fiにつなぐと、iPadのSafariでライブラリと読書モードを使えます。翻訳はこのPCで動きます。</p>' +
       '<p>外出先から読むときは、PCとiPadの両方に <a href="https://tailscale.com/download" target="_blank" rel="noopener">Tailscale</a>（自分の端末どうしだけをつなぐ無料のVPN）を入れ、同じアカウントでログインしておきます。共有を始めると、外出先用のQRコードも表示します。</p>' +
-      '<p class="note">開始するとWindowsのファイアウォール確認が出ることがあります。「プライベート ネットワーク」を許可してください。アプリを閉じると共有も止まります。</p>' +
+      '<p class="note">開始するとWindowsのファイアウォール確認が出ることがあります。「プライベート ネットワーク」を許可してください。「共有を止める」を押すまで、アプリを開き直しても同じアドレスで自動的に共有を再開します。</p>' +
       '<div class="modal-actions"><button data-close>閉じる</button><button class="primary" id="shareOn">共有を開始</button></div>');
     $("#shareOn").onclick = async () => { try { state.share = await api("/share", {method: "POST", body: JSON.stringify({enable: true})}); showShare(); } catch (e) { toast(e.message); } };
   } else {
     const remote = info.remote_url ?
       '<h4>外出先から（Tailscale）</h4><img class="qr" src="' + fileUrl("/share/qr.svg") + "&which=remote&r=" + Date.now() + '" alt="外出先用のQRコード"><div class="url">' + esc(info.remote_url) + "</div>" +
-      '<p class="note">iPadでもTailscaleを起動してから開いてください。PCがスリープしていると開けません。</p>'
+      '<div class="modal-actions" style="justify-content:flex-start;margin-top:6px"><button id="copyRemote">リンクをコピー</button>' +
+      '<a class="btn" href="mailto:?subject=' + encodeURIComponent("論文リーダー（外出先用）") + "&body=" + encodeURIComponent(info.remote_url) + '">自分にメールで送る</a></div>' +
+      '<p class="note">このアドレスは毎回同じです。一度開いてブックマークか「ホーム画面に追加」をしておけば、次からQRコードは要りません。iPadでもTailscaleを起動してから開いてください。PCがスリープしていると開けません。</p>'
       : '<p class="note">外出先から読むには、PCとiPadに <a href="https://tailscale.com/download" target="_blank" rel="noopener">Tailscale</a> を入れて同じアカウントでログインし、この画面を開き直してください。</p>';
     modal('<h3>iPadで読む</h3><p>iPadのカメラでQRコードを読み取ってください。Safariで開いたら、共有メニューの「ホーム画面に追加」でアプリのように使えます。</p>' +
       (info.remote_url ? "<h4>同じWi‑Fiで</h4>" : "") +
@@ -214,6 +216,13 @@ async function showShare() {
       '<p class="note">このリンク（合言葉入り）を知っている端末だけが開けます。</p>' + remote +
       '<div class="modal-actions"><button id="shareOff">共有を止める</button><span class="grow"></span><button class="primary" data-close>閉じる</button></div>');
     $("#shareOff").onclick = async () => { state.share = await api("/share", {method: "POST", body: JSON.stringify({enable: false})}); closeModal(); toast("共有を止めました"); };
+    if ($("#copyRemote")) $("#copyRemote").onclick = async () => {
+      try { await navigator.clipboard.writeText(info.remote_url); toast("コピーしました"); }
+      catch (_) {
+        const r = document.createRange(); r.selectNodeContents(document.querySelectorAll(".url")[1]);
+        const s = getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand("copy"); toast("コピーしました");
+      }
+    };
   }
 }
 $("#btnShare").addEventListener("click", showShare);

@@ -350,6 +350,17 @@ def lan_ip() -> str:
         return "127.0.0.1"
 
 
+class ShareServer(ThreadingHTTPServer):
+    """iPad 共有用。Windows で使用中のポートに重ねて開かないよう、ポートを独占する。"""
+
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def _is_tailscale(ip: str) -> bool:
     parts = ip.split(".")
     return len(parts) == 4 and parts[0] == "100" and 64 <= int(parts[1]) <= 127
@@ -404,15 +415,21 @@ class App:
         remote = f"http://{ts}:{self.share_port}/?t={self.token}" if ts else None
         return {"enabled": True, "url": url, "remote_url": remote}
 
-    def set_share(self, enable: bool) -> dict:
+    def set_share(self, enable: bool, remember: bool = True) -> dict:
         if enable and not self.share_server:
             last: OSError | None = None
-            # 8766 が他のアプリ（論文PDFファイル名整理など）に使われていたら、次の空きポートを使う
-            for port in range(SHARE_PORT, SHARE_PORT + 20):
+            # 保存したリンクが使い続けられるよう、前回のポートを最優先で使う。
+            # 使われていたら（論文PDFファイル名整理など）次の空きポートにする
+            saved = load_settings().get("share_port")
+            ports = list(range(SHARE_PORT, SHARE_PORT + 20))
+            if isinstance(saved, int) and saved in ports:
+                ports.remove(saved)
+                ports.insert(0, saved)
+            for port in ports:
                 if self.local_server and port == self.local_server.server_address[1]:
                     continue
                 try:
-                    self.share_server = ThreadingHTTPServer(("0.0.0.0", port), make_handler(self))  # noqa: S104
+                    self.share_server = ShareServer(("0.0.0.0", port), make_handler(self))  # noqa: S104
                     self.share_port = port
                     break
                 except OSError as e:
@@ -420,20 +437,29 @@ class App:
             else:
                 raise last or OSError("空いているポートがありません")
             threading.Thread(target=self.share_server.serve_forever, daemon=True).start()
+            if remember:
+                save_settings({"share_enabled": True, "share_port": self.share_port})
         elif not enable and self.share_server:
             self.share_server.shutdown()
             self.share_server.server_close()
             self.share_server = None
+            if remember:
+                save_settings({"share_enabled": False})
         return self.share_info()
 
     def start_local(self, port: int) -> ThreadingHTTPServer:
         self.local_server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(self))
         threading.Thread(target=self.local_server.serve_forever, daemon=True).start()
         self.jobs.recover()
+        if load_settings().get("share_enabled"):
+            try:  # 前回共有していたら、アプリを開いたときに自動で再開する
+                self.set_share(True)
+            except OSError:
+                pass
         return self.local_server
 
     def shutdown(self) -> None:
-        self.set_share(False)
+        self.set_share(False, remember=False)  # 閉じても「共有する」設定は覚えておく
         self.llama.stop()
 
 

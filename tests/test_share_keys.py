@@ -80,12 +80,27 @@ class ShareTests(unittest.TestCase):
             pass  # already taken by another app on this PC, which is the same situation
         self.addCleanup(blocker.close)
         obj = self.fake_app()
-        with patch.object(server, "tailscale_ip", return_value=None):
+        with patch.object(server, "tailscale_ip", return_value=None), \
+             patch.object(server, "load_settings", return_value={}), patch.object(server, "save_settings"):
             info = server.App.set_share(obj, True)
-        self.addCleanup(lambda: server.App.set_share(obj, False))
+        self.addCleanup(lambda: server.App.set_share(obj, False, remember=False))
         self.assertGreater(obj.share_port, server.SHARE_PORT)
         self.assertIn(f":{obj.share_port}/?t=tok", info["url"])
         self.assertIsNone(info["remote_url"])
+
+    def test_reuses_saved_port_and_remembers_sharing(self):
+        with socket.socket() as probe:  # pick a free port inside the share range
+            port = next(p for p in range(server.SHARE_PORT + 5, server.SHARE_PORT + 20)
+                        if probe.connect_ex(("127.0.0.1", p)) != 0)
+        obj = self.fake_app()
+        with patch.object(server, "tailscale_ip", return_value=None), \
+             patch.object(server, "load_settings", return_value={"share_port": port}), \
+             patch.object(server, "save_settings") as save:
+            server.App.set_share(obj, True)
+            self.assertEqual(obj.share_port, port)
+            save.assert_called_with({"share_enabled": True, "share_port": port})
+            server.App.set_share(obj, False, remember=False)  # closing the app keeps the setting
+            self.assertEqual(save.call_count, 1)
 
     def test_remote_url_uses_tailscale_address(self):
         obj = self.fake_app()
