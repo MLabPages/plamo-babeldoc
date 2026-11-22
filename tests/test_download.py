@@ -67,9 +67,9 @@ class DownloadTests(unittest.TestCase):
         self.assertIn("error", api.save_pdf("abcdef123456", "dual", "plamo-2b"))  # not translated yet
         self.assertIn("error", api.save_pdf("abcdef123456", "translated", "no-such-engine"))
 
-    def test_only_save_pdf_is_exposed_to_the_page(self):
+    def test_only_file_dialog_functions_are_exposed_to_the_page(self):
         public = [n for n in dir(app.Api()) if not n.startswith("_")]
-        self.assertEqual(public, ["save_pdf"])
+        self.assertEqual(public, ["choose_folder", "save_pdf"])
 
 
 if __name__ == "__main__":

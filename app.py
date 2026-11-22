@@ -56,6 +56,14 @@ class Api:
         except OSError as e:
             return {"error": f"保存できませんでした: {e}"}
 
+    def choose_folder(self, start: str = "") -> str:
+        import webview
+
+        chosen = self._window.create_file_dialog(webview.FileDialog.FOLDER, directory=start or "")
+        if not chosen:
+            return ""
+        return str(chosen[0] if isinstance(chosen, (list, tuple)) else chosen)
+
 ICON = __import__("pathlib").Path(__file__).resolve().parent / "assets" / "app.ico"
 
 

@@ -71,6 +71,28 @@ def pdf_download_name(meta: dict, kind: str) -> str:
     return stem[:150] + suffix + ".pdf"
 
 
+def export_pdfs(meta: dict, engine: str, out_dir: Path) -> list[Path]:
+    """Copy finished PDFs to the user's sync folder (OneDrive, Google Drive, iCloud ...).
+
+    PCを開けない外出先でも、iPad のクラウドアプリから読めるようにする。フォルダ未設定なら何もしない。
+    """
+    folder = (load_settings().get("export_dir") or "").strip()
+    if not folder or not os.path.isdir(folder):
+        return []
+    written = []
+    for kind in ("translated", "dual"):
+        src = out_dir / PDF_FILES[kind]
+        if not src.exists():
+            continue
+        name = pdf_download_name(meta, kind)[:-4] + "_" + engine + ".pdf"
+        dest = Path(folder) / name
+        tmp = dest.with_suffix(".pdf.part")
+        shutil.copyfile(src, tmp)
+        replace_file(tmp, dest)
+        written.append(dest)
+    return written
+
+
 class Library:
     def __init__(self) -> None:
         LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
@@ -313,6 +335,10 @@ class Jobs:
                 meta["title_ja"] = data["title"]
                 lib.save_meta(doc_id, meta)
             update(**updates)
+        try:
+            export_pdfs(lib.meta(doc_id), engine, out)
+        except OSError as e:
+            update(warning=f"同期フォルダへの書き出しに失敗しました: {e}")
 
 
 def lan_ip() -> str:
@@ -493,7 +519,10 @@ def make_handler(app: App):
                     return self._json({
                         "engines": engine_list(s),
                         "settings": {"engine": s.get("engine"), "gemini_model": s.get("gemini_model"),
-                                     "translate_references": bool(s.get("translate_references"))},
+                                     "translate_references": bool(s.get("translate_references")),
+                                     **({"export_dir": s.get("export_dir") or "",
+                                         "export_hint": get_env("OneDrive")}
+                                        if self.client_address[0] == "127.0.0.1" else {})},
                         "share": app.share_info(),
                         "is_local": self.client_address[0] == "127.0.0.1",
                     })
@@ -600,8 +629,27 @@ def make_handler(app: App):
                         return self._err(400, "モデル名に使えない文字が含まれています。")
                     if isinstance(body.get("translate_references"), bool):
                         allowed["translate_references"] = body["translate_references"]
+                    if isinstance(body.get("export_dir"), str):
+                        # 書き出し先はこのPCの画面からだけ変えられる
+                        if self.client_address[0] != "127.0.0.1" or self.server is not app.local_server:
+                            return self._err(403, "書き出し先はPCの画面から設定してください。")
+                        folder = body["export_dir"].strip().strip('"')
+                        if folder and (len(folder) > 400 or not os.path.isdir(folder)):
+                            return self._err(400, "そのフォルダが見つかりません。")
+                        allowed["export_dir"] = folder
                     save_settings(allowed)
                     return self._json({"ok": True})
+                if parts == ["export_all"]:
+                    if self.client_address[0] != "127.0.0.1" or self.server is not app.local_server:
+                        return self._err(403, "PCの画面から実行してください。")
+                    if not (load_settings().get("export_dir") or "").strip():
+                        return self._err(400, "先に書き出し先のフォルダを保存してください。")
+                    count = 0
+                    for meta in app.library.list():
+                        for eng, tr in meta.get("translations", {}).items():
+                            if tr.get("status") == "done" and eng in ENGINES:
+                                count += len(export_pdfs(meta, eng, app.library.doc_dir(meta["id"]) / "out" / eng))
+                    return self._json({"ok": True, "files": count})
                 if parts == ["share"]:
                     if self.client_address[0] != "127.0.0.1":
                         return self._err(403, "共有の設定はPCの画面から行ってください。")

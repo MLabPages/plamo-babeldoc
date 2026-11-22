@@ -129,6 +129,7 @@ body.focus .tts:hover,body.focus.show-bar .tts{opacity:1}
 .key-row label{font-size:12px;margin:0}
 .key-row input{margin:0;min-width:0}
 .key-row button{font-size:12px;min-height:30px;padding:4px 10px}
+.export-row{grid-template-columns:minmax(0,1fr) auto auto}
 .modal-box h4{margin:14px 0 4px;font-size:14px}
 .modal-box code{font-family:Consolas,monospace;font-size:12px;padding:1px 6px;border-radius:6px;background:var(--paper);border:1px solid var(--line)}
 .modal-box code.set{color:#2e7d32}

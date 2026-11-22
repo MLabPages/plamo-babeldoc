@@ -131,8 +131,17 @@ $("#btnSettings").addEventListener("click", async () => {
       (envs ? '<div class="' + (state.is_local ? "eng-keys" : "eng-env") + '">' + envs + "</div>" : "") + "</div>";
   }).join("");
   const gem = state.engines.find((e) => e.id === "gemini");
+  const pywv = window.pywebview && window.pywebview.api && window.pywebview.api.choose_folder;
+  const exportBox = state.is_local ?
+    '<h4>PCを開けないときのために（クラウドのフォルダへ自動保存）</h4>' +
+    '<p class="note">OneDrive・Googleドライブ・iCloudなど、クラウドと同期しているフォルダを選ぶと、翻訳が終わるたびに日本語訳と対訳のPDFをそこへ保存します。iPadでは各クラウドのアプリやファイルアプリで開けます。電車などでオフラインで読むときは、iPad側でフォルダを「オフラインで使用可能」にしておくと確実です。論文はそのクラウドに保存されます。</p>' +
+    '<div class="key-row export-row"><input type="text" id="exportDir" value="' + esc(s.export_dir || "") + '" placeholder="' + esc(s.export_hint ? s.export_hint + "\\論文の訳" : "例: C:\\Users\\あなた\\OneDrive\\論文の訳") + '" spellcheck="false">' +
+    (pywv ? '<button id="exportPick">参照...</button>' : "") + '<button id="exportSave">保存</button></div>' +
+    '<div class="modal-actions" style="justify-content:flex-start;margin-top:6px"><button id="exportAll"' + (s.export_dir ? "" : " disabled") + '>翻訳済みの論文もすべて保存</button>' +
+    (s.export_dir ? '<button id="exportOff">自動保存をやめる</button>' : "") + "</div>" : "";
   modal('<h3>翻訳エンジンとデータの扱い</h3>' + rows +
     '<p class="note">APIキーはWindowsのユーザー環境変数に保存します（このアプリのファイルには書きません）。PowerShellの <code>setx</code> で設定した値も使えます。</p>' +
+    exportBox +
     '<label for="gModel">Geminiのモデル（一覧から選ぶか、モデル名を直接入力）</label><input type="text" id="gModel" list="gModels" value="' + esc(s.gemini_model) + '" autocomplete="off" spellcheck="false"><datalist id="gModels"></datalist>' +
     '<div class="modal-actions"><span class="grow"></span><button data-close>閉じる</button><button class="primary" id="gSave">モデル名を保存</button></div>');
   if (gem && gem.available) {
@@ -161,6 +170,29 @@ $("#btnSettings").addEventListener("click", async () => {
   document.querySelectorAll("[data-key-del]").forEach((b) => b.onclick = () => {
     if (confirm(b.dataset.keyDel + " を削除しますか？")) saveKey(b.dataset.keyDel, null);
   });
+  const saveExport = async (folder) => {
+    try {
+      await api("/settings", {method: "POST", body: JSON.stringify({export_dir: folder})});
+      toast(folder ? "保存先を設定しました。これから翻訳するPDFは自動で保存します" : "自動保存をやめました");
+      $("#btnSettings").click();
+    } catch (e) { toast(e.message); }
+  };
+  if ($("#exportPick")) $("#exportPick").onclick = async () => {
+    const f = await window.pywebview.api.choose_folder($("#exportDir").value.trim() || s.export_hint || "");
+    if (f) $("#exportDir").value = f;
+  };
+  if ($("#exportSave")) $("#exportSave").onclick = () => {
+    const f = $("#exportDir").value.trim();
+    if (!f) { toast("フォルダを選んでください"); return; }
+    saveExport(f);
+  };
+  if ($("#exportOff")) $("#exportOff").onclick = () => saveExport("");
+  if ($("#exportAll")) $("#exportAll").onclick = async () => {
+    try {
+      const r = await api("/export_all", {method: "POST", body: "{}"});
+      toast(r.files + "個のPDFを保存しました");
+    } catch (e) { toast(e.message); }
+  };
 });
 
 async function showShare() {
