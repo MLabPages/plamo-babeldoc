@@ -14,7 +14,7 @@ CAPTION_RE = re.compile(r"^(図|表)\s*[\d０-９]+\s*[.．:：\s　]|^(Figure|F
 MATH_RE = re.compile(r"[\U0001D400-\U0001D7FF∑∫√≈≤≥±×÷∂∆∇]")
 JP_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 CONTINUATION = set("をのにがはでともるれりたっゃゅょァィゥェォッャュョーぁぃぅぇぉ、")
-READING_VERSION = 9
+READING_VERSION = 10
 NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+[^\d\W]", re.UNICODE)
 LETTERED_HEADING = re.compile(r"^([IVX]{1,5}|[A-H])\.\s+[A-Z]")
 REF_HEADING_RE = re.compile(
@@ -785,6 +785,7 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
     notes: list[dict] = []
     in_refs = False
     scan_pages: dict[int, list[pymupdf.Rect]] = {}
+    scanned_tables: dict[int, list[pymupdf.Rect]] = {}
     centered_scan_headings: dict[int, list[dict]] = {}
     for pno, (page, blocks) in enumerate(zip(doc, pages)):
         H = page.rect.height
@@ -802,6 +803,8 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                                   else ([], []))
         if scan and scan_figs:
             scan_pages[pno] = scan_figs
+        if scan:
+            scanned_tables[pno] = scan_tables
         table_rects += scan_tables
         orig_crops = scan_tables + scan_figs
         panels = ((_panels(orig[pno]) + _captioned_figures(orig[pno]))
@@ -1083,7 +1086,8 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
     if orig is not None:
         orig.close()
     out_data: dict = {"version": READING_VERSION, "title": title, "items": items, "source_toc": source_toc,
-                      "_repair": {"scan_pages": scan_pages, "centered_headings": centered_scan_headings, "body_size": median}}
+                      "_repair": {"scan_pages": scan_pages, "scanned_tables": scanned_tables,
+                                  "centered_headings": centered_scan_headings, "body_size": median}}
     if title_align:
         out_data["title_align"] = title_align
     return out_data
@@ -1104,6 +1108,7 @@ def write_reading(mono_pdf: Path, original_pdf: Path, out_dir: Path) -> dict:
             repair_meta["scan_pages"],
             repair_meta["centered_headings"],
             repair_meta["body_size"],
+            scanned_tables=repair_meta["scanned_tables"],
         )
     write_outline(mono_pdf, mono_pdf, data)
     if (out_dir / "dual.pdf").exists():
