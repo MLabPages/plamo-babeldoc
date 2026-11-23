@@ -14,7 +14,7 @@ CAPTION_RE = re.compile(r"^(図|表)\s*[\d０-９]+\s*[.．:：\s　]|^(Figure|F
 MATH_RE = re.compile(r"[\U0001D400-\U0001D7FF∑∫√≈≤≥±×÷∂∆∇]")
 JP_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 CONTINUATION = set("をのにがはでともるれりたっゃゅょァィゥェォッャュョーぁぃぅぇぉ、")
-READING_VERSION = 8
+READING_VERSION = 9
 NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+[^\d\W]", re.UNICODE)
 LETTERED_HEADING = re.compile(r"^([IVX]{1,5}|[A-H])\.\s+[A-Z]")
 REF_HEADING_RE = re.compile(
@@ -271,29 +271,90 @@ def _is_dark(color: int) -> bool:
     return max(r, g, b) - min(r, g, b) < 40  # 黒・灰色（無彩色）
 
 
+def _span_style(sp: dict) -> str:
+    font = sp.get("font", "").lower()
+    b = bool(sp["flags"] & 16) or any(k in font for k in ("bold", "demi", "heavy", "black"))
+    i = bool(sp["flags"] & 2) or any(k in font for k in ("italic", "oblique", "klee"))
+    return ("b" if b else "") + ("i" if i else "")
+
+
+def _is_centered(rect: pymupdf.Rect, page_width: float) -> bool:
+    if page_width <= 0:
+        return False
+    cx = (rect.x0 + rect.x1) / 2.0
+    return abs(cx - page_width / 2.0) < 0.08 * page_width and rect.width < 0.72 * page_width
+
+
+def _join_runs(line_runs: list[list[tuple[str, str]]]) -> list[list[str]] | None:
+    """各行のスパン書式（太字・斜体）を保ったまま結合する。書式の変化がなければ None。"""
+    merged: list[list[str]] = []
+    for runs in line_runs:
+        # 行内の空白を整えつつ追加
+        line_clean: list[tuple[str, str]] = []
+        for txt, st in runs:
+            s = _normalize_compat(txt.replace("\u00a0", " ").replace("\u202f", " ").replace("\u2009", " "))
+            if s:
+                line_clean.append((s, st))
+        if not line_clean:
+            continue
+        # 行頭・行末の余分な空白をトリム
+        first_t, first_s = line_clean[0]
+        line_clean[0] = (first_t.lstrip(), first_s)
+        last_t, last_s = line_clean[-1]
+        line_clean[-1] = (last_t.rstrip(), last_s)
+        line_clean = [(t, s) for t, s in line_clean if t]
+        if not line_clean:
+            continue
+        if merged:
+            prev_t = merged[-1][0]
+            next_t = line_clean[0][0]
+            if prev_t.endswith("-") and next_t[:1].islower():
+                merged[-1][0] = prev_t[:-1]
+            elif (prev_t[-1:].isascii() and prev_t[-1:].isalnum() and next_t[:1].isascii() and next_t[:1].isalnum()) or (
+                prev_t[-1:] in ",.;:)" and next_t[:1].isascii()
+            ):
+                merged[-1][0] = prev_t + " "
+        for txt, st in line_clean:
+            if merged and merged[-1][1] == st:
+                merged[-1][0] += txt
+            else:
+                merged.append([txt, st])
+    if not merged:
+        return None
+    styles = {st for txt, st in merged if txt.strip()}
+    if styles <= {""}:
+        return None
+    return merged
+
+
 def _block_info(block: dict) -> dict | None:
-    lines, raw_lines, size, bold_chars, italic_chars, color_chars, chars = [], [], 0.0, 0, 0, 0, 0
+    lines, raw_lines, line_runs, size, bold_chars, italic_chars, color_chars, chars = [], [], [], 0.0, 0, 0, 0, 0
     for line in block.get("lines", []):
         dx, dy = line.get("dir", (1, 0))
         if abs(dx - 1) > 0.05 or abs(dy) > 0.05:
             continue  # 縦書きの欄外表記などは読まない
         t = "".join(sp["text"] for sp in line["spans"])
+        spans_styled: list[tuple[str, str]] = []
         for sp in line["spans"]:
             n = len(sp["text"].strip())
             chars += n
             size = max(size, sp["size"])
-            if sp["flags"] & 16 or "bold" in sp.get("font", "").lower():
+            st = _span_style(sp)
+            if "b" in st:
                 bold_chars += n
-            if sp["flags"] & 2 or "italic" in sp.get("font", "").lower():
+            if "i" in st:
                 italic_chars += n
             if not _is_dark(sp.get("color", 0)):
                 color_chars += n
+            spans_styled.append((sp["text"], st))
         lines.append(t)
+        line_runs.append(spans_styled)
         lx0, ly0, lx1, ly1 = line["bbox"]
-        raw_lines.append((lx0, ly0, lx1, ly1, t))
+        raw_lines.append((lx0, ly0, lx1, ly1, t, spans_styled))
     if not lines or chars == 0:
         return None
-    return {"rect": pymupdf.Rect(block["bbox"]), "lines": lines, "raw_lines": raw_lines, "size": size,
+    return {"rect": pymupdf.Rect(block["bbox"]), "lines": lines, "raw_lines": raw_lines, "line_runs": line_runs,
+            "size": size,
             "bold": bold_chars / chars > 0.8, "italic": italic_chars / chars > 0.8,
             "colored": color_chars / chars > 0.8}
 
@@ -315,6 +376,7 @@ def _merge_adjacent(infos: list[dict]) -> list[dict]:
             if same_style and same_col and same_source and -2 <= gap < p["size"] * 0.9:
                 p["lines"] += b["lines"]
                 p["raw_lines"] = p.get("raw_lines", []) + b.get("raw_lines", [])
+                p["line_runs"] = p.get("line_runs", []) + b.get("line_runs", [])
                 p["rect"] = q | r
                 continue
         out.append(dict(b))
@@ -406,9 +468,9 @@ def _flush_refs(ref_infos: list[dict], page_width: float, page_no: int, items: l
     """参考文献ブロックを行座標（ぶら下げインデント）と番号区切りで1件ずつに整える。"""
     raw = []
     for info in ref_infos:
-        for x0, y0, x1, y1, t in info.get("raw_lines", []):
+        for x0, y0, x1, y1, t, spans in info.get("raw_lines", []):
             if t.strip():
-                raw.append((x0, y0, x1, y1, t))
+                raw.append((x0, y0, x1, y1, t, spans))
     if not raw:
         return
     mid = page_width / 2
@@ -425,17 +487,18 @@ def _flush_refs(ref_infos: list[dict], page_width: float, page_no: int, items: l
         # 同じ視覚行（y0 が 3.5pt 以内）の断片を x0 順に 1 行へまとめる
         col.sort(key=lambda ln: (ln[1], ln[0]))
         vlines: list[dict] = []
-        for x0, y0, x1, y1, t in col:
+        for x0, y0, x1, y1, t, spans in col:
             if vlines and abs(y0 - vlines[-1]["y0"]) < 3.5:
-                vlines[-1]["parts"].append((x0, t))
+                vlines[-1]["parts"].append((x0, t, spans))
                 vlines[-1]["x0"] = min(vlines[-1]["x0"], x0)
                 vlines[-1]["x1"] = max(vlines[-1]["x1"], x1)
                 vlines[-1]["y1"] = max(vlines[-1]["y1"], y1)
             else:
-                vlines.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1, "parts": [(x0, t)]})
+                vlines.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1, "parts": [(x0, t, spans)]})
         for vl in vlines:
             vl["parts"].sort(key=lambda p: p[0])
-            vl["text"] = _join([t for _, t in vl["parts"]])
+            vl["text"] = _join([t for _, t, _ in vl["parts"]])
+            vl["spans"] = [sp for _, _, sps in vl["parts"] for sp in sps]
         vlines = [vl for vl in vlines if vl["text"].strip()]
         if not vlines:
             continue
@@ -446,23 +509,33 @@ def _flush_refs(ref_infos: list[dict], page_width: float, page_no: int, items: l
         has_hanging = any(not a and b for a, b in zip(indented, indented[1:]))
 
         if has_hanging:
-            entries: list[list[str]] = []
+            entries: list[tuple[list[str], list[list[tuple[str, str]]]]] = []
             for idx, vl in enumerate(vlines):
                 if indented[idx]:
                     if entries:
-                        entries[-1].append(vl["text"])
+                        entries[-1][0].append(vl["text"])
+                        entries[-1][1].append(vl["spans"])
                     else:
                         # 段・ページの先頭が字下げ行なら、直前の参考文献の続きにつなぐ
                         prev_ref = next((it for it in reversed(items) if it["t"] != "page"), None)
                         if prev_ref is not None and prev_ref["t"] == "ref":
                             prev_ref["text"] = _join([prev_ref["text"], vl["text"]])
+                            prev_ref.pop("runs", None)
                         else:
-                            entries.append([vl["text"]])
+                            entries.append(([vl["text"]], [vl["spans"]]))
                 else:
-                    entries.append([vl["text"]])
-            for lines in entries:
-                for kind, txt in _split_ref_text(_join(lines)):
-                    items.append({"t": kind, "text": txt, "page": page_no})
+                    entries.append(([vl["text"]], [vl["spans"]]))
+            for lines, spans_list in entries:
+                split_res = _split_ref_text(_join(lines))
+                if len(split_res) == 1 and split_res[0][0] == "ref":
+                    item: dict = {"t": "ref", "text": split_res[0][1], "page": page_no}
+                    runs = _join_runs(spans_list)
+                    if runs and "".join(t for t, _ in runs) == item["text"]:
+                        item["runs"] = runs
+                    items.append(item)
+                else:
+                    for kind, txt in split_res:
+                        items.append({"t": kind, "text": txt, "page": page_no})
         else:
             # ぶら下げインデントが消えている場合はテキストの区切り（番号・DOIなど）で分ける
             merged_text = _join([vl["text"] for vl in vlines])
@@ -706,12 +779,16 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
 
     items: list[dict] = []
     title = ""
+    title_align = ""
     title_size = 0.0
     fig_no = 0
     notes: list[dict] = []
     in_refs = False
+    scan_pages: dict[int, list[pymupdf.Rect]] = {}
+    centered_scan_headings: dict[int, list[dict]] = {}
     for pno, (page, blocks) in enumerate(zip(doc, pages)):
         H = page.rect.height
+        W = page.rect.width
         items.append({"t": "page", "page": pno + 1})
         # 訳文PDFの画像の座標が崩れることがあるので、原文のページでも判定する
         scan = _is_scan(page, blocks) or (orig is not None and pno < orig.page_count
@@ -723,6 +800,8 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
         # スキャンしたページは、表と図の範囲を原文の読み取り文字から割り出し、原文の画像から切り出す
         scan_tables, scan_figs = (_scan_regions(orig[pno]) if scan and orig is not None and pno < orig.page_count
                                   else ([], []))
+        if scan and scan_figs:
+            scan_pages[pno] = scan_figs
         table_rects += scan_tables
         orig_crops = scan_tables + scan_figs
         panels = ((_panels(orig[pno]) + _captioned_figures(orig[pno]))
@@ -795,7 +874,8 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                 if source["role"] == "noise":
                     continue
                 info.update(source_id=source["source_id"], role=source["role"], level=source["level"],
-                            source_heading=source.get("source_heading", ""), source_text=source["text"])
+                            source_heading=source.get("source_heading", ""), source_text=source["text"],
+                            source_rect=source["rect"], source_italic=source.get("italic", False))
             if (rect.y1 < 0.07 * H or rect.y0 > 0.93 * H) and len(text) < 140:
                 continue  # ヘッダー・フッター
             if scan and (rect.y1 < 0.12 * H or rect.y0 > 0.9 * H) and len(text) < 40:
@@ -868,8 +948,12 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                 kind = "p"
             if info.get("role") == "title":
                 title = text
+                if _is_centered(info.get("source_rect") or rect, W):
+                    title_align = "center"
             elif not sources and pno == 0 and kind == "h2" and size > title_size and len(text) < 160:
                 title_size, title = size, text
+                if _is_centered(rect, W):
+                    title_align = "center"
 
             if kind in ("h2", "h3"):
                 if ref_buf:
@@ -929,16 +1013,30 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                     and (len(prev["text"]) > 80 or text[:1] in CONTINUATION or crossed)):
                 prev["text"] = _join([prev["text"], text])
                 prev["_r"] = (pno, rect.x0, rect.y0, rect.y1)
+                if prev.get("_line_runs") is not None:
+                    prev["_line_runs"] += info.get("line_runs", [])
                 if original and original not in prev.get("orig", ""):
                     prev["orig"] = _join([prev.get("orig", ""), original])
                 continue
             item = {"t": kind, "text": text, "page": pno + 1}
             if kind == "p":
                 item["_r"] = (pno, rect.x0, rect.y0, rect.y1)
+                item["_line_runs"] = list(info.get("line_runs", []))
             if kind in ("h2", "h3"):
                 item["text"] = _tidy_heading(text)
                 item.update(level=info.get("level", 2), source_heading=info.get("source_heading", text),
                             x=rect.x0, y=rect.y0)
+                ref_rect = info.get("source_rect") or rect
+                if _is_centered(ref_rect, W):
+                    item["align"] = "center"
+                if (info.get("source_italic") or info.get("italic")
+                        or (scan and _key(info.get("source_text", "")) in {"method", "procedure"})):
+                    item["italic"] = True
+                if (scan and not page.rotation and (item.get("align") or item.get("italic"))
+                        and not (pno == 0 and item["text"] == title)):
+                    centered_scan_headings.setdefault(pno, []).append({
+                        **item, "_orig_mono_rect": tuple(rect), "_mono_bold": info["bold"],
+                    })
             if kind == "eq":
                 item["_rect"] = pymupdf.Rect(rect)
             if original and kind != "eq":
@@ -972,6 +1070,11 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
     items.extend(notes)
     for it in items:
         it.pop("_r", None)
+        lr = it.pop("_line_runs", None)
+        if lr and it["t"] == "p":
+            runs = _join_runs(lr)
+            if runs and "".join(t for t, _ in runs) == _normalize_compat(it["text"]):
+                it["runs"] = runs
         for key in ("text", "orig"):
             if isinstance(it.get(key), str):
                 it[key] = _normalize_compat(it[key])
@@ -979,13 +1082,29 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
     doc.close()
     if orig is not None:
         orig.close()
-    return {"version": READING_VERSION, "title": title, "items": items, "source_toc": source_toc}
+    out_data: dict = {"version": READING_VERSION, "title": title, "items": items, "source_toc": source_toc,
+                      "_repair": {"scan_pages": scan_pages, "centered_headings": centered_scan_headings, "body_size": median}}
+    if title_align:
+        out_data["title_align"] = title_align
+    return out_data
 
 
 def write_reading(mono_pdf: Path, original_pdf: Path, out_dir: Path) -> dict:
     from .pdf_outline import write_outline
+    from .pdf_repair import repair_pdfs
 
     data = build_reading(mono_pdf, original_pdf, out_dir / "figs")
+    repair_meta = data.pop("_repair", None)
+    if repair_meta:
+        dual = out_dir / "dual.pdf"
+        repair_pdfs(
+            mono_pdf,
+            original_pdf,
+            dual if dual.exists() else None,
+            repair_meta["scan_pages"],
+            repair_meta["centered_headings"],
+            repair_meta["body_size"],
+        )
     write_outline(mono_pdf, mono_pdf, data)
     if (out_dir / "dual.pdf").exists():
         write_outline(out_dir / "dual.pdf", mono_pdf, data)

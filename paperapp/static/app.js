@@ -274,9 +274,20 @@ async function openReader(id, engine) {
 }
 $("#readEngine").addEventListener("change", (e) => { savePos(); ttsStop(); openReader(cur.id, e.target.value); });
 
+function renderText(it) {
+  if (!Array.isArray(it.runs) || !it.runs.length) return esc(it.text);
+  return it.runs.map(([t, st]) => {
+    const s = esc(t);
+    if (st === "bi") return "<strong><em>" + s + "</em></strong>";
+    if (st === "b") return "<strong>" + s + "</strong>";
+    if (st === "i") return "<em>" + s + "</em>";
+    return s;
+  }).join("");
+}
+
 function renderArticle(data) {
   let html = "";
-  if (data.title) html += '<div class="doc-h1">' + esc(data.title) + "</div>";
+  if (data.title) html += '<div class="doc-h1' + (data.title_align === "center" ? " center" : "") + '">' + esc(data.title) + "</div>";
   let n = 0, skippedTitle = false;
   for (const it of data.items) {
     if (it.t === "page") { html += '<div class="page-mark" data-page="' + it.page + '">' + it.page + " ページ</div>"; continue; }
@@ -287,8 +298,14 @@ function renderArticle(data) {
       continue;
     }
     const tag = it.t === "h2" ? "h2" : it.t === "h3" ? "h3" : "p";
-    const cls = it.t === "ref" ? ' class="ref"' : it.t === "cap" ? ' class="cap"' : it.t === "note" || it.t === "label" ? ' class="cap ' + it.t + '"' : "";
-    html += "<" + tag + cls + ' data-i="' + (n++) + '">' + esc(it.text) + "</" + tag + ">";
+    const classes = [];
+    if (it.t === "ref") classes.push("ref");
+    else if (it.t === "cap") classes.push("cap");
+    else if (it.t === "note" || it.t === "label") classes.push("cap", it.t);
+    if (it.align === "center") classes.push("center");
+    if (it.italic) classes.push("italic");
+    const cls = classes.length ? ' class="' + classes.join(" ") + '"' : "";
+    html += "<" + tag + cls + ' data-i="' + (n++) + '">' + renderText(it) + "</" + tag + ">";
     if (it.orig && tag === "p") html += '<div class="orig">' + esc(it.orig) + "</div>";
   }
   article.innerHTML = html;
