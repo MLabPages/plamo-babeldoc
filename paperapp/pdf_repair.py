@@ -83,12 +83,29 @@ _SERIES = re.compile(r"\b([a-z]+)\s+(\d+)\s*=\s*(\d+(?:\s*,\s*\d+){2,})", re.I)
 _BROKEN_LIST = re.compile(r"(?:[,，]\s*){3,}")
 
 
+def _trailing_series_label(page: pymupdf.Page, area: pymupdf.Rect, label: str) -> pymupdf.Rect | None:
+    """Find the label left after the colon on the line immediately above the list."""
+    clip = pymupdf.Rect(area.x0 - 1, area.y0 - 18, area.x1 + 1, area.y0)
+    for block in page.get_text("rawdict", clip=clip)["blocks"]:
+        for line in block.get("lines", []):
+            chars = [c for span in line["spans"] for c in span["chars"] if not c["c"].isspace()]
+            text = unicodedata.normalize("NFKC", "".join(c["c"] for c in chars))
+            if not text.endswith(":" + label):
+                continue
+            rect = pymupdf.Rect(chars[-len(label)]["bbox"])
+            for char in chars[-len(label) + 1:]:
+                rect |= pymupdf.Rect(char["bbox"])
+            return rect
+    return None
+
+
 def _restore_numeric_series(source: pymupdf.Page, page: pymupdf.Page) -> bool:
     """Reflow a damaged inline series using the source values and keep the Japanese suffix."""
     changed = False
     font_path = _bold_font_path()
     if font_path is None:
         return False
+    font = pymupdf.Font(fontfile=font_path)
     blocks = [b for b in page.get_text("blocks") if b[6] == 0]
     for original in source.get_text("blocks"):
         if original[6] != 0:
@@ -100,36 +117,52 @@ def _restore_numeric_series(source: pymupdf.Page, page: pymupdf.Page) -> bool:
         if any(word.lower() != label or int(index) != n for n, (word, index, _) in enumerate(values, 1)):
             continue
         zone = pymupdf.Rect(original[:4]) + (-2, -2, 2, 2)
+        plain = [index + " = " + ", ".join(re.findall(r"\d+", nums)) for _, index, nums in values]
+        previous = re.sub(r"\s+", "", "".join(entry + (";" if (i + 1) % 3 and i + 1 < len(plain) else "")
+                                               for i, entry in enumerate(plain)))
         for block in blocks:
             area = pymupdf.Rect(block[:4])
-            if not zone.contains(area) or not _BROKEN_LIST.search(block[4]):
+            if not zone.contains(area):
                 continue
-            nearby = [b for b in blocks if b[1] <= block[1] and b[3] >= block[1] - 3
-                      and zone.contains(pymupdf.Rect(b[:4])) and re.search(r"\b1\s*=\s*\d", b[4])]
-            if len(nearby) != 1:
-                continue
-            area |= pymupdf.Rect(nearby[0][:4])
-            suffix = re.search(r"。\s*(\S.*)$", block[4].strip(), flags=re.S)
-            if not suffix:
-                continue
-            entries = [index + " = " + ", ".join(re.findall(r"\d+", nums)) for _, index, nums in values]
-            lines = [";  ".join(entries[i:i + 3]) for i in range(0, len(entries), 3)]
-            suffix_text = unicodedata.normalize("NFKC", " ".join(suffix[1].split()))
-            if any(pymupdf.get_text_length(line, fontname="cour", fontsize=8.5) > area.width for line in lines):
+            suffix_text = ""
+            if _BROKEN_LIST.search(block[4]):
+                nearby = [b for b in blocks if b[1] <= block[1] and b[3] >= block[1] - 3
+                          and zone.contains(pymupdf.Rect(b[:4])) and re.search(r"\b1\s*=\s*\d", b[4])]
+                suffix = re.search(r"。\s*(\S.*)$", block[4].strip(), flags=re.S)
+                if len(nearby) != 1 or not suffix:
+                    continue
+                area |= pymupdf.Rect(nearby[0][:4])
+                suffix_text = unicodedata.normalize("NFKC", " ".join(suffix[1].split()))
+            else:
+                line_count = (len(plain) + 2) // 3
+                prior_lines = block[4].strip().splitlines()
+                if re.sub(r"\s+", "", "".join(prior_lines[:line_count])) != previous:
+                    continue
+                suffix_text = " ".join(prior_lines[line_count:])
+            display_label = "文字列" if label == "string" else values[0][0]
+            entries = [f"{display_label} {index} = " + ", ".join(re.findall(r"\d+", nums))
+                       for _, index, nums in values]
+            lines = ["; ".join(entries[i:i + 3]) + (";" if i + 3 < len(entries) else "。")
+                     for i in range(0, len(entries), 3)]
+            if any(font.text_length(line, fontsize=8.5) > zone.x1 - area.x0 for line in lines):
                 continue
             shape = page.new_shape()
             for n, line in enumerate(lines):
-                shape.insert_text((area.x0, area.y0 + 8 + n * 10), line, fontname="cour", fontsize=8.5)
-            suffix_area = pymupdf.Rect(area.x0, area.y0 + len(lines) * 10, area.x1, area.y1)
-            if suffix_area.is_empty or shape.insert_textbox(
-                suffix_area, suffix_text, fontname="jpseries", fontfile=font_path, fontsize=8.5, lineheight=1.15,
-            ) < 0:
-                continue
+                shape.insert_text((area.x0, area.y0 + 8 + n * 10), line,
+                                  fontname="jpserieslabel", fontfile=font_path, fontsize=8.5)
+            if suffix_text:
+                baseline = area.y0 + len(lines) * 10 + 7
+                if baseline > area.y1 or font.text_length(suffix_text, fontsize=8.5) > area.width:
+                    continue
+                shape.insert_text((area.x0, baseline), suffix_text,
+                                  fontname="jpserieslabel", fontfile=font_path, fontsize=8.5)
             page.add_redact_annot(area, fill=(1, 1, 1), cross_out=False)
+            trailing_label = _trailing_series_label(page, area, display_label)
+            if trailing_label is not None:
+                page.add_redact_annot(trailing_label, fill=(1, 1, 1), cross_out=False)
             page.apply_redactions(images=0, graphics=0)
             # Applying redactions can discard the fonts registered by the uncommitted shape.
-            page.insert_font(fontname="cour")
-            page.insert_font(fontname="jpseries", fontfile=font_path)
+            page.insert_font(fontname="jpserieslabel", fontfile=font_path)
             shape.commit()
             changed = True
             break
