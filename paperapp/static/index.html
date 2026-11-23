@@ -45,8 +45,16 @@
       <button data-mode="dual">対訳</button>
     </div>
     <button id="btnFocus" class="ghost" title="集中モード（F）">集中</button>
+    <button id="btnFind" class="ghost" title="論文内を検索（Ctrl+F）" aria-controls="findBar" aria-expanded="false">検索</button>
     <button id="btnDisplay" class="ghost" title="表示設定">Aa</button>
   </header>
+  <form id="findBar" class="find-bar hidden" role="search" aria-label="論文内検索">
+    <input id="findInput" type="search" aria-label="検索する文字" placeholder="論文内を検索" autocomplete="off">
+    <output id="findCount" aria-live="polite"></output>
+    <button id="findPrev" type="button" aria-label="前の一致（Shift+Enter）">↑</button>
+    <button id="findNext" type="submit" aria-label="次の一致（Enter）">↓</button>
+    <button id="findClose" type="button" aria-label="検索を閉じる（Esc）">×</button>
+  </form>
   <div class="progress"><div id="progressFill"></div></div>
   <div id="readPane" class="read-pane">
     <article id="article"></article>

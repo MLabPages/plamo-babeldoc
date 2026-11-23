@@ -48,6 +48,12 @@ button:disabled{opacity:.45;cursor:default}
 
 /* reader */
 .reader-bar{transition:transform .25s}
+.find-bar{position:fixed;z-index:31;top:calc(env(safe-area-inset-top) + 8px);right:12px;display:flex;align-items:center;gap:5px;max-width:calc(100vw - 24px);padding:6px;background:var(--paper);border:1px solid var(--line);border-radius:10px;box-shadow:0 4px 16px #0002}
+.find-bar input{min-width:0;width:13em;padding:6px;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px}
+.find-bar output{font-size:12px;white-space:nowrap}
+.find-bar button{padding:4px 8px;min-height:32px}
+::highlight(paper-find){background:#ffdf73;color:#252016}
+::highlight(paper-find-current){background:#ff9b57;color:#252016}
 .doc-title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;font-size:14px}
 .tabs{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .tabs button{border:0;border-radius:0;background:transparent;min-height:34px;padding:6px 12px}

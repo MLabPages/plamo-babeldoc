@@ -251,7 +251,10 @@ function applyPrefs() {
 $("#themeSeg").addEventListener("click", (e) => { if (e.target.dataset.v) { prefs.theme = e.target.dataset.v; savePrefs(); applyPrefs(); } });
 $("#fontSeg").addEventListener("click", (e) => { if (e.target.dataset.v) { prefs.font = e.target.dataset.v; savePrefs(); applyPrefs(); } });
 [["#fontSize", "fs"], ["#lineHeight", "lh"], ["#colWidth", "w"]].forEach(([s, k]) => $(s).addEventListener("input", (e) => { prefs[k] = Number(e.target.value); savePrefs(); applyPrefs(); }));
-$("#showOrig").addEventListener("change", (e) => { prefs.orig = e.target.checked; savePrefs(); applyPrefs(); });
+$("#showOrig").addEventListener("change", (e) => {
+  prefs.orig = e.target.checked; savePrefs(); applyPrefs();
+  if (!findBar.classList.contains("hidden")) updateFind();
+});
 $("#showFigs").addEventListener("change", (e) => { prefs.figs = e.target.checked; savePrefs(); applyPrefs(); });
 $("#btnDisplay").addEventListener("click", () => $("#displayPanel").classList.toggle("hidden"));
 document.addEventListener("click", (e) => { if (!e.target.closest("#displayPanel,#btnDisplay")) $("#displayPanel").classList.add("hidden"); });
@@ -309,8 +312,102 @@ function renderArticle(data) {
     if (it.orig && tag === "p") html += '<div class="orig">' + esc(it.orig) + "</div>";
   }
   article.innerHTML = html;
+  if (!findBar.classList.contains("hidden")) updateFind();
 }
 const units = () => [...article.querySelectorAll("[data-i]")];
+
+const findBar = $("#findBar");
+const findInput = $("#findInput");
+let findMatches = [], findIndex = 0;
+
+function showFindMatch() {
+  const range = findMatches[findIndex];
+  if (range) {
+    if (CSS.highlights) {
+      const active = new Highlight(range);
+      active.priority = 1;
+      CSS.highlights.set("paper-find-current", active);
+    }
+    const rect = range.getBoundingClientRect();
+    window.scrollBy(0, rect.top + rect.height / 2 - innerHeight / 2);
+  } else CSS.highlights?.delete("paper-find-current");
+  $("#findCount").textContent = range ? (findIndex + 1) + " / " + findMatches.length
+    : findInput.value.trim() ? "0 件" : "";
+  $("#findPrev").disabled = $("#findNext").disabled = !range;
+}
+
+function updateFind() {
+  findMatches = [];
+  findIndex = 0;
+  const query = findInput.value.trim();
+  if (query) {
+    const pattern = new RegExp(query.replace(/[.*+?^$(){}|[\]\\]/g, "\\$&"), "giu");
+    for (const block of article.children) {
+      if (!block.getClientRects().length || block.matches(".page-mark,figure")) continue;
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      let text = "";
+      for (let node; (node = walker.nextNode());) {
+        if (!node.length) continue;
+        text += node.data;
+        nodes.push({node, end: text.length});
+      }
+      for (const match of text.matchAll(pattern)) {
+        const end = match.index + match[0].length;
+        const first = nodes.find((part) => part.end > match.index);
+        const last = nodes.find((part) => part.end >= end);
+        const range = new Range();
+        range.setStart(first.node, match.index - first.end + first.node.length);
+        range.setEnd(last.node, end - last.end + last.node.length);
+        findMatches.push(range);
+      }
+    }
+  }
+  if (CSS.highlights) {
+    const highlights = new Highlight();
+    for (const range of findMatches) highlights.add(range);
+    CSS.highlights.set("paper-find", highlights);
+  }
+  showFindMatch();
+}
+
+function openFind() {
+  if (findBar.classList.contains("hidden")) {
+    findBar.classList.remove("hidden");
+    $("#btnFind").setAttribute("aria-expanded", "true");
+    updateFind();
+  }
+  findInput.focus();
+  findInput.select();
+}
+
+function closeFind(restoreFocus = false) {
+  findBar.classList.add("hidden");
+  $("#btnFind").setAttribute("aria-expanded", "false");
+  CSS.highlights?.delete("paper-find");
+  CSS.highlights?.delete("paper-find-current");
+  findMatches = [];
+  if (restoreFocus) $("#btnFind").focus({preventScroll: true});
+}
+
+function stepFind(direction) {
+  if (!findMatches.length) return;
+  findIndex = (findIndex + direction + findMatches.length) % findMatches.length;
+  showFindMatch();
+}
+
+$("#btnFind").addEventListener("click", openFind);
+findInput.addEventListener("input", (event) => { if (!event.isComposing) updateFind(); });
+findInput.addEventListener("compositionend", updateFind);
+findBar.addEventListener("submit", (event) => { event.preventDefault(); stepFind(1); });
+findInput.addEventListener("keydown", (event) => {
+  if (!event.isComposing && event.key === "Enter" && event.shiftKey) {
+    event.preventDefault();
+    stepFind(-1);
+  }
+});
+$("#findPrev").addEventListener("click", () => stepFind(-1));
+$("#findClose").addEventListener("click", () => closeFind(true));
 
 article.addEventListener("click", (e) => {
   const img = e.target.closest("figure img, .eq img");
@@ -366,7 +463,9 @@ function setMode(mode) {
   $("#ttsBar").classList.toggle("hidden", !read);
   $("#pdfPane").classList.toggle("hidden", read);
   $("#btnFocus").classList.toggle("hidden", !read);
+  $("#btnFind").classList.toggle("hidden", !read);
   if (!read) {
+    closeFind();
     ttsStop();
     const url = fileUrl("/doc/" + cur.id + "/" + (mode === "pdf" ? "translated" : "dual") + "/" + cur.engine);
     $("#pdfOpen").href = url;
@@ -394,6 +493,7 @@ async function savePdf(kind) {
 $("#pdfSave").addEventListener("click", () => savePdf(cur.mode === "dual" ? "dual" : "translated"));
 
 $("#btnBack").addEventListener("click", () => {
+  closeFind();
   savePos(); ttsStop(); document.body.classList.remove("focus", "show-bar");
   $("#reader").classList.add("hidden"); $("#home").classList.remove("hidden");
   $("#pdfFrame").src = "about:blank"; $("#pdfFrame").dataset.src = "";
@@ -418,13 +518,24 @@ document.addEventListener("keydown", (e) => {
     else if (e.key === "-") viewerZoom(0.8);
     return;
   }
-  if ($("#reader").classList.contains("hidden") || e.target.matches("input,select,textarea")) return;
+  if ($("#reader").classList.contains("hidden") || !$("#modal").classList.contains("hidden") || e.isComposing) return;
+  if (cur.mode === "read" && (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "f") {
+    e.preventDefault();
+    openFind();
+    return;
+  }
+  if (e.key === "Escape" && !findBar.classList.contains("hidden")) {
+    e.preventDefault();
+    closeFind(true);
+    return;
+  }
+  if (e.target.matches("input,select,textarea")) return;
   if ((e.ctrlKey || e.metaKey) && cur.mode === "read" && ["+", "=", ";", "-", "0"].includes(e.key)) {
     e.preventDefault();
     setZoom(e.key === "0" ? 1 : prefs.zoom * (e.key === "-" ? 1 / 1.1 : 1.1));
     return;
   }
-  if (e.key === "f" || e.key === "F") toggleFocus();
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "f") toggleFocus();
   else if (e.key === " " && cur.mode === "read" && (e.ctrlKey || e.altKey)) { e.preventDefault(); ttsToggle(); }
   else if (e.key === "Escape") { document.body.classList.remove("focus", "show-bar"); $("#displayPanel").classList.add("hidden"); }
   else if (e.key === "ArrowDown" && e.altKey) { e.preventDefault(); stepPara(1); }
