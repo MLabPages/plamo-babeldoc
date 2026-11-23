@@ -117,3 +117,39 @@ class ReadingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScannedPageTest(unittest.TestCase):
+    """A scanned page stored as full-width image strips with an OCR text layer."""
+
+    def test_page_image_strips_are_not_figures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 400, 40), False)
+            pix.set_rect(pix.irect, (255, 255, 255))
+            png = pix.tobytes("png")
+            docs = []
+            for jp in (False, True):
+                doc = pymupdf.open()
+                page = doc.new_page(width=W, height=H)
+                strip = H / 10
+                for k in range(10):
+                    page.insert_image(pymupdf.Rect(0, k * strip, W, (k + 1) * strip), stream=png, keep_proportion=False)
+                font = "japan" if jp else "tiro"
+                body = "本文の段落です。" * 30 if jp else "Body paragraph text of a scanned article. " * 20
+                text(page, (40, 120, 556, 300), body, 9, font)
+                text(page, (40, 320, 300, 335), "表1 結果" if jp else "TABLE 1", 9, font)
+                text(page, (40, 345, 556, 360), "条件 A B" if jp else "Condition  A  B", 9, font)
+                text(page, (40, 365, 556, 380), "高 1.0 2.0" if jp else "High  1.0  2.0", 9, font)
+                text(page, (40, 420, 556, 600), body, 9, font)
+                docs.append(doc)
+            paths = folder / "original.pdf", folder / "translated.pdf"
+            docs[0].save(paths[0]); docs[1].save(paths[1])
+            out = folder / "out"
+            out.mkdir()
+            data = write_reading(paths[1], paths[0], out)
+            figs = [it for it in data["items"] if it["t"] == "fig"]
+            # Only the table is shown as an image; the page strips stay out of the reading view.
+            self.assertEqual(len(figs), 1)
+            self.assertLess(figs[0]["h"], figs[0]["w"])
+            self.assertTrue(any(it["t"] == "p" and len(it["text"]) > 100 for it in data["items"]))

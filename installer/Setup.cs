@@ -16,13 +16,13 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyTitle("PLaMo 論文リーダー セットアップ")]
 [assembly: System.Reflection.AssemblyProduct("PLaMo 論文リーダー")]
 [assembly: System.Reflection.AssemblyCompany("MLabPages")]
-[assembly: System.Reflection.AssemblyVersion("1.0.8.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.8.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.9.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.9.0")]
 
 static class Setup
 {
-    public const string Version = "1.0.8";
-    public const string Tag = "v1.0.8";
+    public const string Version = "1.0.9";
+    public const string Tag = "v1.0.9";
     const string Repo = "MLabPages/plamo-babeldoc";
     const string LlamaBuild = "b12211";
     const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\PLaMoPaperReader";

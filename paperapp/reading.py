@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from pathlib import Path
 
 import pymupdf
@@ -13,7 +14,7 @@ CAPTION_RE = re.compile(r"^(図|表)\s*[\d０-９]+\s*[.．:：\s　]|^(Figure|F
 MATH_RE = re.compile(r"[\U0001D400-\U0001D7FF∑∫√≈≤≥±×÷∂∆∇]")
 JP_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 CONTINUATION = set("をのにがはでともるれりたっゃゅょァィゥェォッャュョーぁぃぅぇぉ、")
-READING_VERSION = 6
+READING_VERSION = 7
 NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+[^\d\W]", re.UNICODE)
 LETTERED_HEADING = re.compile(r"^([IVX]{1,5}|[A-H])\.\s+[A-Z]")
 
@@ -221,6 +222,15 @@ def _split_by_source(block: dict, sources: list[dict]) -> list[dict]:
     return result
 
 
+COMPAT_RE = re.compile("[\uf900-\ufaff]")
+
+
+def _normalize_compat(text: str) -> str:
+    """訳文PDFの文字に混じるCJK互換漢字（見た目は同じ「率」などの別コード）を通常の漢字に直す。
+    検索や読み上げで別の字として扱われないようにする。"""
+    return COMPAT_RE.sub(lambda m: unicodedata.normalize("NFKC", m.group()), text)
+
+
 def _join(parts: list[str]) -> str:
     out = ""
     for s in parts:
@@ -310,8 +320,70 @@ def _merge_rects(rects: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
     return rects
 
 
-def _figure_rects(page: pymupdf.Page, blocks: list[dict]) -> list[tuple[pymupdf.Rect, dict | None]]:
+def _is_scan(page: pymupdf.Page, blocks: list[dict]) -> bool:
+    """スキャンしたページ（ページ全体が画像、文字は読み取り結果）かどうか。
+    画像は帯状に分割されていることも多いので、画像の合計面積で判定する。"""
+    pr = page.rect
+    area = pr.width * pr.height or 1
+    # 回転したページでは画像の座標が回転前の向きなので、ページ枠で切り取らずに面積を足す
+    # 同じ位置に重ねた画像（写真と透明マスクなど）は1回だけ数える
+    boxes = {tuple(round(v) for v in pymupdf.Rect(b["bbox"]).normalize()) for b in blocks if b["type"] == 1}
+    total = sum(pymupdf.Rect(r).get_area() for r in boxes)
+    return total >= 0.8 * area
+
+
+def _scan_regions(page: pymupdf.Page) -> tuple[list[pymupdf.Rect], list[pymupdf.Rect]]:
+    """スキャンしたページの表と図の範囲を、読み取った文字の並びから割り出す。
+    表は「TABLE N」の下から次の本文段落の手前まで、図は「FIG. N」の上の空白部分。"""
+    blocks = sorted((b for b in page.get_text("blocks") if b[6] == 0 and b[4].strip()), key=lambda b: b[1])
+    if not blocks:
+        return [], []
+    top = min(b[1] for b in blocks)
+    bottom = max(b[3] for b in blocks)
+    span = bottom - top or 1
+
+    def prose(b) -> bool:
+        lines = [ln.strip() for ln in b[4].splitlines() if ln.strip()]
+        return len(lines) >= 2 and sum(map(len, lines)) / len(lines) >= 40
+
+    def header(b) -> bool:
+        return b[3] <= top + 0.06 * span and len(b[4]) < 80
+
+    tables: list[pymupdf.Rect] = []
+    figures: list[pymupdf.Rect] = []
+    for cap in blocks:
+        text = " ".join(cap[4].split())
+        if len(text) > 200:
+            continue  # 「Table 5 shows ...」のような本文中の言及は表題ではない
+        if TABLE_MARK.match(text) or re.match(r"^TABLE\s*\d", text, re.IGNORECASE):
+            below = [b for b in blocks if b[1] >= cap[3] - 2]
+            rect = None
+            for b in below:
+                if prose(b) and len(b[4]) > 150:
+                    break
+                rect = pymupdf.Rect(b[:4]) if rect is None else rect | pymupdf.Rect(b[:4])
+            if rect is not None and rect.height > 15:
+                rect.y0 = cap[3] + 1
+                tables.append(rect + (-4, 0, 4, 3))
+        elif re.match(r"^(FIG\.?|FIGURE)\s*\d", text, re.IGNORECASE):
+            above = [b for b in blocks if b[3] <= cap[1] + 2 and not (b[2] < cap[0] or b[0] > cap[2])]
+            fences = [b[3] for b in above if prose(b) or header(b)]
+            y0 = max(fences) if fences else top
+            rect = pymupdf.Rect(cap[0], y0 + 2, cap[2], cap[1] - 1)
+            for b in above:
+                if b[1] >= y0:
+                    rect.x0, rect.x1 = min(rect.x0, b[0]), max(rect.x1, b[2])
+            if rect.height > 20:
+                figures.append(rect + (-4, 0, 4, 0))
+    return tables, figures
+
+
+def _figure_rects(page: pymupdf.Page, blocks: list[dict], scan: bool = False) -> list[tuple[pymupdf.Rect, dict | None]]:
     """図の領域を返す。写真 1 枚だけの領域には、その画像ブロックも添える。"""
+    if scan:
+        # スキャンのページは、ページ画像の帯やBabelDOCが原文を隠す白い四角しかないので、
+        # 図は原文の読み取り文字から別に割り出す（_scan_regions）
+        return []
     pr = page.rect
     area = pr.width * pr.height
     # 長い本文ブロック（これと大きく重なるものは背景画像・背景の枠とみなす）
@@ -324,7 +396,7 @@ def _figure_rects(page: pymupdf.Page, blocks: list[dict]) -> list[tuple[pymupdf.
     cands = []
     rasters = []
     for b in blocks:
-        if b["type"] == 1:
+        if b["type"] == 1 and not scan:
             r = pymupdf.Rect(b["bbox"]) & pr
             if 0.02 * area < r.width * r.height < 0.7 * area:
                 cands.append(r)
@@ -472,12 +544,20 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
     for pno, (page, blocks) in enumerate(zip(doc, pages)):
         H = page.rect.height
         items.append({"t": "page", "page": pno + 1})
-        fig_list = _figure_rects(page, blocks)
+        # 訳文PDFの画像の座標が崩れることがあるので、原文のページでも判定する
+        scan = _is_scan(page, blocks) or (orig is not None and pno < orig.page_count
+                                          and _is_scan(orig[pno], orig[pno].get_text("dict")["blocks"]))
+        fig_list = _figure_rects(page, blocks, scan)
         # 囲み型の図（枠の中に「FIGURE 1」などがある文字の多いインフォグラフィック）は
         # 中の文字を本文として並べず、図として画像で見せる
         table_rects = _tables(orig[pno]) if orig is not None and pno < orig.page_count else []
+        # スキャンしたページは、表と図の範囲を原文の読み取り文字から割り出し、原文の画像から切り出す
+        scan_tables, scan_figs = (_scan_regions(orig[pno]) if scan and orig is not None and pno < orig.page_count
+                                  else ([], []))
+        table_rects += scan_tables
+        orig_crops = scan_tables + scan_figs
         panels = ((_panels(orig[pno]) + _captioned_figures(orig[pno]))
-                  if orig is not None and pno < orig.page_count else []) + table_rects
+                  if orig is not None and pno < orig.page_count else []) + scan_figs + table_rects
         if panels:
             fig_list = [(r, ras) for r, ras in fig_list
                         if not any((p & r).get_area() > .5 * r.get_area() for p in panels)]
@@ -505,6 +585,19 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
             fig_no += 1
             name = f"p{pno + 1}_{fig_no}.png"
             size = _save_raster(fig_list[i][1], fig_dir / name) if fig_list[i][1] else None
+            if size is None and any(r == o for o in orig_crops):
+                src = orig[pno]
+                # 横向きの表のページも、文字が正立する向き（回転前）で切り出す
+                rot = src.rotation
+                if rot:
+                    src.set_rotation(0)
+                try:
+                    pix = src.get_pixmap(clip=r & src.rect, dpi=170)
+                finally:
+                    if rot:
+                        src.set_rotation(rot)
+                pix.save(str(fig_dir / name))
+                size = (pix.width, pix.height)
             if size is None:
                 pix = page.get_pixmap(clip=r, dpi=150)
                 pix.save(str(fig_dir / name))
@@ -536,6 +629,10 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                             source_heading=source.get("source_heading", ""), source_text=source["text"])
             if (rect.y1 < 0.07 * H or rect.y0 > 0.93 * H) and len(text) < 140:
                 continue  # ヘッダー・フッター
+            if scan and (rect.y1 < 0.12 * H or rect.y0 > 0.9 * H) and len(text) < 40:
+                continue  # スキャンのページの柱（雑誌名・ページ番号）
+            if scan and re.fullmatch(r"[\d\s.]{1,8}", text.strip()):
+                continue  # page number away from the margin
             center = pymupdf.Point((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)
             if len(text) <= 120 and any(r.contains(center) for r in figs):
                 continue  # 図の中の文字は図として見せる
@@ -588,6 +685,14 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                 kind = "label"
             elif not sources and short and NUMBERED_HEADING.match(text) and (info["bold"] or info["italic"]):
                 kind = "h2"
+            elif (scan and info.get("role") in (None, "body") and len(text.strip()) <= 25
+                  and not (pno == 0 and not any(it["t"] == "p" and len(it["text"]) > 100 for it in items))
+                  and not text.rstrip().endswith(TERMINAL)
+                  and re.search(r"[^\d\s.,]", text)):
+                # スキャンのページは書式がわからないので、短く独立した行（「実験1」「方法」など）を見出しにする
+                major = re.match(r"^\s*(第.{1,3}部|実験\s*[\d０-９]+|Part\b|PART\b|Experiment\b|EXPERIMENT\b)", text)
+                kind = "h2" if major else "h3"
+                info["level"] = 2 if major else 3
             else:
                 kind = "p"
             if info.get("role") == "title":
@@ -678,6 +783,9 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
     items.extend(notes)
     for it in items:
         it.pop("_r", None)
+        for key in ("text", "orig"):
+            if isinstance(it.get(key), str):
+                it[key] = _normalize_compat(it[key])
     source_toc = orig.get_toc() if orig is not None else []
     doc.close()
     if orig is not None:
