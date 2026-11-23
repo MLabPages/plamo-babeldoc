@@ -91,6 +91,16 @@ body.focus .tts:hover,body.focus.show-bar .tts{opacity:1}
 .panel .row>span{width:3em;color:var(--sub)}
 .panel input[type=range]{flex:1}
 .panel .check{gap:8px}
+.zoom-ctl{flex:1;display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.zoom-ctl button{flex:1;border:0;border-radius:0;background:transparent;min-height:32px;padding:4px}
+.zoom-ctl button+button{border-left:1px solid var(--line)}
+article{zoom:var(--zoom,1)}
+article figure img,article .eq img{cursor:zoom-in}
+.viewer{position:fixed;inset:0;z-index:70;background:rgba(20,20,20,.92);display:flex;flex-direction:column}
+.viewer-bar{display:flex;gap:8px;padding:10px 12px;padding-top:max(10px,env(safe-area-inset-top))}
+.viewer-bar button{min-width:52px}
+.viewer-body{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y pinch-zoom}
+.viewer-body img{display:block;margin:auto;background:#fff;border-radius:4px}
 .seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;flex:1}
 .seg button{flex:1;border:0;border-radius:0;background:transparent;min-height:32px;padding:4px}
 .seg button.on{background:var(--accent);color:#fff}

@@ -17,7 +17,7 @@ const toast = (msg) => { const t = $("#toast"); t.textContent = msg; t.classList
 const fmtSec = (s) => s >= 60 ? Math.floor(s / 60) + "分" + Math.round(s % 60) + "秒" : Math.round(s) + "秒";
 
 let state = null, library = [], pollTimer = null;
-const prefs = Object.assign({theme: "light", font: "serif", fs: 19, lh: 1.95, w: 38, orig: false, figs: true, rate: 1.1, voice: ""},
+const prefs = Object.assign({theme: "light", font: "serif", fs: 19, lh: 1.95, w: 38, orig: false, figs: true, rate: 1.1, voice: "", zoom: 1},
   JSON.parse(localStorage.getItem("prefs") || "{}"));
 const savePrefs = () => localStorage.setItem("prefs", JSON.stringify(prefs));
 
@@ -239,6 +239,8 @@ function applyPrefs() {
   document.body.classList.toggle("no-figs", !prefs.figs);
   const r = document.documentElement.style;
   r.setProperty("--fs", prefs.fs + "px"); r.setProperty("--lh", prefs.lh); r.setProperty("--w", prefs.w + "em");
+  r.setProperty("--zoom", prefs.zoom);
+  $("#zoomReset").textContent = Math.round(prefs.zoom * 100) + "%";
   document.querySelectorAll("#themeSeg button").forEach((b) => b.classList.toggle("on", b.dataset.v === prefs.theme));
   document.querySelectorAll("#fontSeg button").forEach((b) => b.classList.toggle("on", b.dataset.v === prefs.font));
   $("#fontSize").value = prefs.fs; $("#lineHeight").value = prefs.lh; $("#colWidth").value = prefs.w;
@@ -294,6 +296,8 @@ function renderArticle(data) {
 const units = () => [...article.querySelectorAll("[data-i]")];
 
 article.addEventListener("click", (e) => {
+  const img = e.target.closest("figure img, .eq img");
+  if (img) { openViewer(img.src); return; }
   const el = e.target.closest("[data-i]");
   if (!el) return;
   const o = el.nextElementSibling;
@@ -391,7 +395,18 @@ $("#readPane").addEventListener("touchend", (e) => {
   lastTap = now;
 });
 document.addEventListener("keydown", (e) => {
+  if (!$("#viewer").classList.contains("hidden")) {
+    if (e.key === "Escape") closeViewer();
+    else if (e.key === "+" || e.key === "=" || e.key === ";") viewerZoom(1.25);
+    else if (e.key === "-") viewerZoom(0.8);
+    return;
+  }
   if ($("#reader").classList.contains("hidden") || e.target.matches("input,select,textarea")) return;
+  if ((e.ctrlKey || e.metaKey) && cur.mode === "read" && ["+", "=", ";", "-", "0"].includes(e.key)) {
+    e.preventDefault();
+    setZoom(e.key === "0" ? 1 : prefs.zoom * (e.key === "-" ? 1 / 1.1 : 1.1));
+    return;
+  }
   if (e.key === "f" || e.key === "F") toggleFocus();
   else if (e.key === " " && cur.mode === "read" && (e.ctrlKey || e.altKey)) { e.preventDefault(); ttsToggle(); }
   else if (e.key === "Escape") { document.body.classList.remove("focus", "show-bar"); $("#displayPanel").classList.add("hidden"); }
@@ -404,6 +419,75 @@ function stepPara(d) {
   if (!list.length) return;
   if (tts.playing) ttsStart(i); else { ttsStop(); setCurrent(list[i]); list[i].scrollIntoView({block: "center", behavior: "smooth"}); }
 }
+
+// ---------------- 拡大縮小 ----------------
+// 読書モード全体（文字・図・数式）を拡大縮小する。段落は画面幅で折り返し直すので横にはみ出さない。
+function setZoom(z) {
+  z = Math.round(Math.min(3, Math.max(0.6, z)) * 100) / 100;
+  if (z === prefs.zoom) return;
+  const anchor = article.querySelector(".current") || units().find((el) => el.getBoundingClientRect().bottom > 80);
+  const before = anchor ? anchor.getBoundingClientRect().top : 0;
+  prefs.zoom = z; savePrefs(); applyPrefs();
+  if (anchor) window.scrollBy(0, anchor.getBoundingClientRect().top - before);  // 読んでいた段落の位置を保つ
+}
+$("#zoomIn").addEventListener("click", () => setZoom(prefs.zoom * 1.1));
+$("#zoomOut").addEventListener("click", () => setZoom(prefs.zoom / 1.1));
+$("#zoomReset").addEventListener("click", () => setZoom(1));
+// Ctrl＋ホイール（PC・タッチパッドのピンチ）
+$("#readPane").addEventListener("wheel", (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  setZoom(prefs.zoom * Math.exp(-e.deltaY / 400));
+}, {passive: false});
+// 2本指のピンチ（iPad・iPhone）
+let pinch = null;
+const touchGap = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+$("#readPane").addEventListener("touchstart", (e) => {
+  if (e.touches.length === 2) pinch = {d: touchGap(e.touches), z: prefs.zoom};
+}, {passive: true});
+$("#readPane").addEventListener("touchmove", (e) => {
+  if (!pinch || e.touches.length !== 2) return;
+  e.preventDefault();
+  setZoom(pinch.z * touchGap(e.touches) / pinch.d);
+}, {passive: false});
+$("#readPane").addEventListener("touchend", (e) => { if (e.touches.length < 2) pinch = null; });
+// Safari のページ全体の拡大は止めて、読書モードの拡大に置き換える
+["gesturestart", "gesturechange"].forEach((n) => $("#readPane").addEventListener(n, (e) => e.preventDefault()));
+
+// 図・数式の拡大表示
+let viewerScale = 0;
+function viewerFit() {
+  const img = $("#viewerImg"), body = $("#viewerBody");
+  const s = Math.min((body.clientWidth - 16) / img.naturalWidth, (body.clientHeight - 16) / img.naturalHeight, 2);
+  viewerScale = s; img.style.width = img.naturalWidth * s + "px";
+}
+function viewerZoom(f) {
+  const img = $("#viewerImg");
+  viewerScale = Math.min(8, Math.max(0.1, viewerScale * f));
+  img.style.width = img.naturalWidth * viewerScale + "px";
+}
+function openViewer(src) {
+  const img = $("#viewerImg");
+  img.onload = viewerFit;
+  img.src = src;
+  $("#viewer").classList.remove("hidden");
+  if (img.complete && img.naturalWidth) viewerFit();
+}
+function closeViewer() { $("#viewer").classList.add("hidden"); $("#viewerImg").removeAttribute("src"); }
+$("#viewerClose").addEventListener("click", closeViewer);
+$("#viewerIn").addEventListener("click", () => viewerZoom(1.25));
+$("#viewerOut").addEventListener("click", () => viewerZoom(0.8));
+$("#viewerFit").addEventListener("click", viewerFit);
+$("#viewerBody").addEventListener("click", (e) => { if (e.target.id === "viewerBody") closeViewer(); });
+$("#viewerBody").addEventListener("wheel", (e) => { if (e.ctrlKey) { e.preventDefault(); viewerZoom(Math.exp(-e.deltaY / 300)); } }, {passive: false});
+let vPinch = null;
+$("#viewerBody").addEventListener("touchstart", (e) => { if (e.touches.length === 2) vPinch = {d: touchGap(e.touches), s: viewerScale}; }, {passive: true});
+$("#viewerBody").addEventListener("touchmove", (e) => {
+  if (!vPinch || e.touches.length !== 2) return;
+  e.preventDefault();
+  viewerScale = vPinch.s; viewerZoom(touchGap(e.touches) / vPinch.d);
+}, {passive: false});
+$("#viewerBody").addEventListener("touchend", (e) => { if (e.touches.length < 2) vPinch = null; });
 
 // ---------------- 読み上げ ----------------
 const synth = window.speechSynthesis;
