@@ -153,3 +153,48 @@ class ScannedPageTest(unittest.TestCase):
             self.assertEqual(len(figs), 1)
             self.assertLess(figs[0]["h"], figs[0]["w"])
             self.assertTrue(any(it["t"] == "p" and len(it["text"]) > 100 for it in data["items"]))
+
+
+class ReferenceFormattingTest(unittest.TestCase):
+    """Hanging-indent references and numbered reference notes split cleanly into ref items."""
+
+    def test_hanging_indent_and_numbered_notes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source, translated = pymupdf.open(), pymupdf.open()
+            for doc, jp in ((source, False), (translated, True)):
+                font = "japan" if jp else "tiro"
+                p1 = doc.new_page(width=W, height=H)
+                text(p1, (40, 60, 556, 85), "テスト論文のタイトル" if jp else "A Test Paper Title For References", 14, font)
+                text(p1, (40, 95, 556, 150), ("本文の段落です。" * 10) if jp else ("Body paragraph text. " * 15), 9, font)
+                text(p1, (40, 170, 556, 190), "参考文献" if jp else "REFERENCES", 11, font, bold=True)
+                # Two hanging-indent entries whose lines are close enough to be grouped into one block.
+                p1.insert_text((40, 210), "Alpha, A. First title in journal.", fontsize=9, fontname="tiro")
+                p1.insert_text((56, 221), "Journal of Testing, 1970, 1, 1-10.", fontsize=9, fontname="tiro")
+                p1.insert_text((40, 232), "Beta, B. Second title in journal.", fontsize=9, fontname="tiro")
+                p1.insert_text((56, 243), "Journal of Testing, 1971, 2, 11-20.", fontsize=9, fontname="tiro")
+                p2 = doc.new_page(width=W, height=H)
+                text(p2, (40, 60, 556, 80), "参考文献" if jp else "REFERENCE NOTES", 11, font, bold=True)
+                if jp:
+                    text(p2, (40, 95, 556, 200),
+                         "1. McDaniel, C. K. 色覚と色命名。1972年。 "
+                         "2. Rosch, E. 非典型性効果。1975年。 "
+                         "3. Mervis, C. B. 単語頻度の関係。1975年。（1975年6月3日受理）", 9, font)
+                else:
+                    text(p2, (40, 95, 556, 200),
+                         "1. McDaniel, C. K. Hue naming. 1972.\n"
+                         "2. Rosch, E. Typicality effects. 1975.\n"
+                         "3. Mervis, C. B. Word frequency. 1975.\n(Accepted June 3, 1975)", 9, font)
+            paths = folder / "original.pdf", folder / "translated.pdf"
+            source.save(paths[0]); translated.save(paths[1])
+            out = folder / "out"; out.mkdir()
+            data = write_reading(paths[1], paths[0], out)
+            refs = [it for it in data["items"] if it["t"] == "ref"]
+            self.assertEqual(len(refs), 5)
+            self.assertTrue(refs[0]["text"].startswith("Alpha, A.") and refs[0]["text"].endswith("1-10."))
+            self.assertTrue(refs[1]["text"].startswith("Beta, B.") and refs[1]["text"].endswith("11-20."))
+            self.assertTrue(refs[2]["text"].startswith("1. McDaniel"))
+            self.assertTrue(refs[3]["text"].startswith("2. Rosch"))
+            self.assertTrue(refs[4]["text"].startswith("3. Mervis"))
+            self.assertNotIn("受理", refs[4]["text"])
+            self.assertTrue(any(it["t"] == "p" and "1975年6月3日受理" in it["text"] for it in data["items"]))

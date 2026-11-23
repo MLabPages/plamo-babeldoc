@@ -14,9 +14,25 @@ CAPTION_RE = re.compile(r"^(図|表)\s*[\d０-９]+\s*[.．:：\s　]|^(Figure|F
 MATH_RE = re.compile(r"[\U0001D400-\U0001D7FF∑∫√≈≤≥±×÷∂∆∇]")
 JP_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 CONTINUATION = set("をのにがはでともるれりたっゃゅょァィゥェォッャュョーぁぃぅぇぉ、")
-READING_VERSION = 7
+READING_VERSION = 8
 NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+[^\d\W]", re.UNICODE)
 LETTERED_HEADING = re.compile(r"^([IVX]{1,5}|[A-H])\.\s+[A-Z]")
+REF_HEADING_RE = re.compile(
+    r"^(参考文献|引用文献|references?|reference\s+notes?|bibliography|works\s+cited)$",
+    re.IGNORECASE,
+)
+TRAILING_DATE_RE = re.compile(
+    r"\s*([（(](?:Accepted|Received|Revised|受理|受付)[^）)]{2,40}[）)]"
+    r"|[（(][^）)]{2,30}(?:受理|受付)[）)])\s*$",
+    re.IGNORECASE,
+)
+DOI_AUTHOR_SPLIT_RE = re.compile(
+    r"(https?://\s*doi\.org/\s*\S+\.)\s+(?=[A-Z][a-zA-Z\u00C0-\u024F'\-]+,\s+[A-Z])"
+)
+
+
+def _is_ref_heading(text: str, source_heading: str = "") -> bool:
+    return bool(REF_HEADING_RE.match(text.strip()) or (source_heading and REF_HEADING_RE.match(source_heading.strip())))
 
 
 def _key(text: str) -> str:
@@ -256,7 +272,7 @@ def _is_dark(color: int) -> bool:
 
 
 def _block_info(block: dict) -> dict | None:
-    lines, size, bold_chars, italic_chars, color_chars, chars = [], 0.0, 0, 0, 0, 0
+    lines, raw_lines, size, bold_chars, italic_chars, color_chars, chars = [], [], 0.0, 0, 0, 0, 0
     for line in block.get("lines", []):
         dx, dy = line.get("dir", (1, 0))
         if abs(dx - 1) > 0.05 or abs(dy) > 0.05:
@@ -273,9 +289,11 @@ def _block_info(block: dict) -> dict | None:
             if not _is_dark(sp.get("color", 0)):
                 color_chars += n
         lines.append(t)
+        lx0, ly0, lx1, ly1 = line["bbox"]
+        raw_lines.append((lx0, ly0, lx1, ly1, t))
     if not lines or chars == 0:
         return None
-    return {"rect": pymupdf.Rect(block["bbox"]), "lines": lines, "size": size,
+    return {"rect": pymupdf.Rect(block["bbox"]), "lines": lines, "raw_lines": raw_lines, "size": size,
             "bold": bold_chars / chars > 0.8, "italic": italic_chars / chars > 0.8,
             "colored": color_chars / chars > 0.8}
 
@@ -296,10 +314,160 @@ def _merge_adjacent(infos: list[dict]) -> list[dict]:
                 same_style = True  # 訳文の書体・文字サイズの揺れでも原文の1段落は分けない
             if same_style and same_col and same_source and -2 <= gap < p["size"] * 0.9:
                 p["lines"] += b["lines"]
+                p["raw_lines"] = p.get("raw_lines", []) + b.get("raw_lines", [])
                 p["rect"] = q | r
                 continue
         out.append(dict(b))
     return out
+
+
+def _reorder_if_inverted(infos: list[dict], page_width: float) -> list[dict]:
+    """原文のまま残った参考文献などが翻訳本文より先に並ぶ描画順の逆転を直す。"""
+    inverted = False
+    for i in range(len(infos)):
+        ri = infos[i]["rect"]
+        for j in range(i + 1, len(infos)):
+            rj = infos[j]["rect"]
+            overlap_x = min(ri.x1, rj.x1) - max(ri.x0, rj.x0)
+            min_w = min(ri.width, rj.width) or 1
+            if overlap_x > 0.5 * min_w and ri.y0 > rj.y1 + 2:
+                inverted = True
+                break
+        if inverted:
+            break
+    if not inverted:
+        return infos
+    mid = page_width / 2
+    left = [b for b in infos if b["rect"].x1 <= mid + 15]
+    right = [b for b in infos if b["rect"].x0 >= mid - 15]
+    if len(left) < 2 or len(right) < 2:
+        return sorted(infos, key=lambda b: (b["rect"].y0, b["rect"].x0))
+    full = [b for b in infos if b["rect"].x0 < mid - 15 and b["rect"].x1 > mid + 15]
+    full.sort(key=lambda b: b["rect"].y0)
+    out: list[dict] = []
+    prev_y = -1e9
+    for fb in full + [None]:
+        limit_y = fb["rect"].y0 if fb is not None else 1e9
+        band_l = sorted([b for b in left if prev_y <= b["rect"].y0 < limit_y], key=lambda b: b["rect"].y0)
+        band_r = sorted([b for b in right if prev_y <= b["rect"].y0 < limit_y], key=lambda b: b["rect"].y0)
+        out.extend(band_l)
+        out.extend(band_r)
+        if fb is not None:
+            out.append(fb)
+            prev_y = fb["rect"].y0 + 0.01
+    return out
+
+
+def _split_ref_text(text: str) -> list[tuple[str, str]]:
+    """1段落にまとまった参考文献や番号付きレファレンスノートを1件ずつに分ける。"""
+    s = _normalize_compat(text).strip()
+    if not s:
+        return []
+    trailing: list[tuple[str, str]] = []
+    m_date = TRAILING_DATE_RE.search(s)
+    if m_date and m_date.start() > 10:
+        trailing.append(("p", m_date.group(1).strip()))
+        s = s[:m_date.start()].strip()
+
+    # 角括弧番号 [1] ... [2] ...
+    if re.match(r"^\[\d+\]\s*", s):
+        parts = [p.strip() for p in re.split(r"(?=(?<!^)\[\d+\]\s*)", s) if p.strip()]
+        if len(parts) > 1:
+            return [("ref", p) for p in parts] + trailing
+
+    # 連番 1. ... 2. ... 3. ...
+    m_num = re.match(r"^(\d+)\.\s+", s)
+    if m_num:
+        cur_n = int(m_num.group(1))
+        parts = []
+        rest = s
+        while True:
+            nxt = cur_n + 1
+            m_next = re.search(rf"(?<=[\s。．.)）])({nxt}\.\s+)", rest)
+            if not m_next:
+                parts.append(rest.strip())
+                break
+            parts.append(rest[:m_next.start()].strip())
+            rest = rest[m_next.start():].strip()
+            cur_n = nxt
+        if len(parts) > 1:
+            return [("ref", p) for p in parts if p] + trailing
+
+    # DOI の直後に次の著者名が続く場合（翻訳されて1段落にまとまった参考文献）
+    if DOI_AUTHOR_SPLIT_RE.search(s):
+        parts = [p.strip() for p in DOI_AUTHOR_SPLIT_RE.sub(r"\1\n", s).splitlines() if p.strip()]
+        if len(parts) > 1:
+            return [("ref", p) for p in parts] + trailing
+
+    return [("ref", s)] + trailing
+
+
+def _flush_refs(ref_infos: list[dict], page_width: float, page_no: int, items: list[dict]) -> None:
+    """参考文献ブロックを行座標（ぶら下げインデント）と番号区切りで1件ずつに整える。"""
+    raw = []
+    for info in ref_infos:
+        for x0, y0, x1, y1, t in info.get("raw_lines", []):
+            if t.strip():
+                raw.append((x0, y0, x1, y1, t))
+    if not raw:
+        return
+    mid = page_width / 2
+    left_raw = [ln for ln in raw if ln[2] <= mid + 15]
+    right_raw = [ln for ln in raw if ln[0] >= mid - 15]
+    if len(left_raw) >= 3 and len(right_raw) >= 3 and len(left_raw) + len(right_raw) >= 0.85 * len(raw):
+        columns = [left_raw, right_raw]
+    else:
+        columns = [raw]
+
+    for col in columns:
+        if not col:
+            continue
+        # 同じ視覚行（y0 が 3.5pt 以内）の断片を x0 順に 1 行へまとめる
+        col.sort(key=lambda ln: (ln[1], ln[0]))
+        vlines: list[dict] = []
+        for x0, y0, x1, y1, t in col:
+            if vlines and abs(y0 - vlines[-1]["y0"]) < 3.5:
+                vlines[-1]["parts"].append((x0, t))
+                vlines[-1]["x0"] = min(vlines[-1]["x0"], x0)
+                vlines[-1]["x1"] = max(vlines[-1]["x1"], x1)
+                vlines[-1]["y1"] = max(vlines[-1]["y1"], y1)
+            else:
+                vlines.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1, "parts": [(x0, t)]})
+        for vl in vlines:
+            vl["parts"].sort(key=lambda p: p[0])
+            vl["text"] = _join([t for _, t in vl["parts"]])
+        vlines = [vl for vl in vlines if vl["text"].strip()]
+        if not vlines:
+            continue
+
+        min_x = min(vl["x0"] for vl in vlines)
+        indented = [vl["x0"] > min_x + 4.0 for vl in vlines]
+        # 先頭行（左端）のあとに字下げ行が続くパターンがあれば、ぶら下げインデントとみなす
+        has_hanging = any(not a and b for a, b in zip(indented, indented[1:]))
+
+        if has_hanging:
+            entries: list[list[str]] = []
+            for idx, vl in enumerate(vlines):
+                if indented[idx]:
+                    if entries:
+                        entries[-1].append(vl["text"])
+                    else:
+                        # 段・ページの先頭が字下げ行なら、直前の参考文献の続きにつなぐ
+                        prev_ref = next((it for it in reversed(items) if it["t"] != "page"), None)
+                        if prev_ref is not None and prev_ref["t"] == "ref":
+                            prev_ref["text"] = _join([prev_ref["text"], vl["text"]])
+                        else:
+                            entries.append([vl["text"]])
+                else:
+                    entries.append([vl["text"]])
+            for lines in entries:
+                for kind, txt in _split_ref_text(_join(lines)):
+                    items.append({"t": kind, "text": txt, "page": page_no})
+        else:
+            # ぶら下げインデントが消えている場合はテキストの区切り（番号・DOIなど）で分ける
+            merged_text = _join([vl["text"] for vl in vlines])
+            for kind, txt in _split_ref_text(merged_text):
+                items.append({"t": kind, "text": txt, "page": page_no})
 
 
 def _merge_rects(rects: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
@@ -541,6 +709,7 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
     title_size = 0.0
     fig_no = 0
     notes: list[dict] = []
+    in_refs = False
     for pno, (page, blocks) in enumerate(zip(doc, pages)):
         H = page.rect.height
         items.append({"t": "page", "page": pno + 1})
@@ -640,6 +809,8 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                 continue
             infos.append(info)
 
+        infos = _reorder_if_inverted(infos, page.rect.width)
+        ref_buf: list[dict] = []
         for info in _merge_adjacent(infos):
             rect, size = info["rect"], info["size"]
             text = _join(info["lines"])
@@ -699,6 +870,21 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                 title = text
             elif not sources and pno == 0 and kind == "h2" and size > title_size and len(text) < 160:
                 title_size, title = size, text
+
+            if kind in ("h2", "h3"):
+                if ref_buf:
+                    _flush_refs(ref_buf, page.rect.width, pno + 1, items)
+                    ref_buf.clear()
+                if _is_ref_heading(text, info.get("source_heading", "")):
+                    in_refs = True
+                elif kind == "h2":
+                    in_refs = False
+            elif in_refs and kind == "p":
+                ref_buf.append(info)
+                continue
+            elif ref_buf:
+                _flush_refs(ref_buf, page.rect.width, pno + 1, items)
+                ref_buf.clear()
 
             prev = next((it for it in reversed(items) if it["t"] != "page"), None)
             adjacent = items and (items[-1] is prev or items[-1]["t"] == "page")
@@ -770,6 +956,9 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
                     r = figs[i]
                     if not placed[i] and -4 <= r.y0 - rect.y1 < 30 and not (r.x1 < rect.x0 or r.x0 > rect.x1):
                         emit_fig(i)
+        if ref_buf:
+            _flush_refs(ref_buf, page.rect.width, pno + 1, items)
+            ref_buf.clear()
         place_figs_before(0, 0, 0, force=True)
         for it in items:
             r = it.pop("_rect", None)

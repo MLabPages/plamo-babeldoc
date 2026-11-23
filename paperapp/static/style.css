@@ -61,6 +61,7 @@ article h2{font-size:1.18em;line-height:1.6;margin:2em 0 .7em;color:var(--accent
 article h3{font-size:1.02em;margin:1.6em 0 .5em;font-family:var(--ufont);font-weight:700}
 article p{margin:0 0 1.15em;text-align:start;border-radius:6px;padding:2px 6px;margin-left:-6px;margin-right:-6px;transition:background .2s,opacity .25s;cursor:pointer}
 article p.cap{font-family:var(--ufont);font-size:.82em;line-height:1.7;color:var(--sub)}
+article p.ref{padding-left:calc(2em + 6px);text-indent:-2em;margin:0 0 .55em;font-size:.9em;line-height:1.68}
 article .orig{display:none;font-family:Georgia,"Times New Roman",serif;font-size:.84em;line-height:1.65;color:var(--sub);border-left:3px solid var(--line);padding:.3em 0 .3em .9em;margin:-.5em 0 1.3em;letter-spacing:0}
 article .orig.open,body.bilingual article .orig{display:block}
 article .page-mark{font-family:var(--ufont);font-size:12px;color:var(--sub);text-align:center;margin:2.2em 0 1.6em;letter-spacing:.1em}
