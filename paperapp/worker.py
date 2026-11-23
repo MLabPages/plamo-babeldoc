@@ -62,7 +62,9 @@ def main(argv: list[str] | None = None) -> None:
 
     bmain.create_progress_handler = make_handler
     args = engine.configure(bmain, settings, a.translate_references)
-    common = ["--lang-in", "en", "--lang-out", "ja", "--output", a.outdir, "--no-watermark"]
+    # 古い論文に多い「スキャン画像＋読み取り済みの文字」の PDF も、その文字を使って訳す
+    common = ["--lang-in", "en", "--lang-out", "ja", "--output", a.outdir, "--no-watermark",
+              "--auto-enable-ocr-workaround"]
     if a.pages:
         common += ["--pages", a.pages]
     if os.environ.get("PAPERAPP_IGNORE_CACHE") == "1":  # 試験用

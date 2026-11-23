@@ -143,7 +143,9 @@ class Library:
                 if not pages:
                     raise ValueError("ページのないPDFは翻訳できません。")
                 meta_title = (doc.metadata or {}).get("title") or ""
-                if 8 < len(meta_title) < 300 and not meta_title.lower().endswith((".pdf", ".doc", ".docx")):
+                # 出版社の管理番号（PII・DOI）や Word のファイル名が題名欄に入っていることがある
+                junk = re.match(r"^\s*(pii|doi|s\d{4}-\d{3}|untitled|microsoft word)", meta_title, re.I)
+                if 8 < len(meta_title) < 300 and not junk and not meta_title.lower().endswith((".pdf", ".doc", ".docx")):
                     title = meta_title
         except (pymupdf.FileDataError, pymupdf.EmptyFileError) as e:
             raise ValueError("PDFを読み込めません。ファイルが壊れていないか確認してください。") from e
