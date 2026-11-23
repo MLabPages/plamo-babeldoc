@@ -9,12 +9,14 @@ from pathlib import Path
 
 import pymupdf
 
+from .numeric_ocr import normalize_p_values
+
 TERMINAL = tuple("。．.!?！？」』）)：:")
 CAPTION_RE = re.compile(r"^(図|表)\s*[\d０-９]+\s*[.．:：\s　]|^(Figure|Fig\.|Table)\s*\d+\s*[.:]", re.IGNORECASE)
 MATH_RE = re.compile(r"[\U0001D400-\U0001D7FF∑∫√≈≤≥±×÷∂∆∇]")
 JP_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 CONTINUATION = set("をのにがはでともるれりたっゃゅょァィゥェォッャュョーぁぃぅぇぉ、")
-READING_VERSION = 11
+READING_VERSION = 12
 NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+[^\d\W]", re.UNICODE)
 LETTERED_HEADING = re.compile(r"^([IVX]{1,5}|[A-H])\.\s+[A-Z]")
 REF_HEADING_RE = re.compile(
@@ -1081,6 +1083,11 @@ def build_reading(mono_pdf: Path, original_pdf: Path, fig_dir: Path) -> dict:
         for key in ("text", "orig"):
             if isinstance(it.get(key), str):
                 it[key] = _normalize_compat(it[key])
+                if it["page"] - 1 in scanned_tables:
+                    corrected = normalize_p_values(it[key])
+                    if key == "text" and corrected != it[key]:
+                        it.pop("runs", None)
+                    it[key] = corrected
     source_toc = orig.get_toc() if orig is not None else []
     doc.close()
     if orig is not None:

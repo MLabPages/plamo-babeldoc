@@ -9,6 +9,7 @@ import unicodedata
 import pymupdf
 
 from .config import replace_file
+from .numeric_ocr import LOOKALIKES, P_VALUE
 
 _BOLD_FONT_CANDIDATES = (
     Path(r"C:\Windows\Fonts\yumindb.ttf"),
@@ -77,6 +78,36 @@ def _table_number_cells(page: pymupdf.Page, tables: list[pymupdf.Rect]) -> list[
         if len(matches) >= 4:
             cells.extend(r + (-1.5, -1, 1.5, 1) for r in matches)
     return cells
+
+
+def _restore_p_values(page: pymupdf.Page) -> bool:
+    """Replace only the misread glyphs, at their original positions."""
+    edits = []
+    for block in page.get_text("rawdict", flags=pymupdf.TEXTFLAGS_TEXT)["blocks"]:
+        for line in block.get("lines", []):
+            if line["dir"] != (1.0, 0.0):
+                continue
+            chars = [(char, span["size"]) for span in line["spans"] for char in span["chars"]]
+            text = "".join(char["c"] for char, _ in chars)
+            for match in P_VALUE.finditer(text):
+                for char, size in chars[match.start("value"):match.end("value")]:
+                    replacement = char["c"].translate(LOOKALIKES)
+                    if replacement == char["c"]:
+                        continue
+                    rect = pymupdf.Rect(char["bbox"])
+                    if rect.is_empty:
+                        continue
+                    edits.append((char["origin"], size, rect, replacement))
+                    page.add_redact_annot(rect, fill=False, cross_out=False)
+    if not edits:
+        return False
+    page.apply_redactions(images=0, graphics=0)
+    for origin, size, rect, replacement in edits:
+        point = pymupdf.Point(origin)
+        scale = min(1, rect.width / pymupdf.get_text_length(replacement, fontname="tiro", fontsize=size))
+        page.insert_text(point, replacement, fontname="tiro", fontsize=size,
+                         morph=(point, pymupdf.Matrix(scale, 1)))
+    return True
 
 
 _SERIES = re.compile(r"\b([a-z]+)\s+(\d+)\s*=\s*(\d+(?:\s*,\s*\d+){2,})", re.I)
@@ -269,6 +300,8 @@ def repair_pdfs(
                     if _restore_scan_figures(orig_p, mono_p, _table_number_cells(orig_p, scanned_tables[pno]), min_size=2):
                         page_changed = True
                     if _restore_numeric_series(orig_p, mono_p):
+                        page_changed = True
+                    if _restore_p_values(mono_p):
                         page_changed = True
                 if pno in centered_headings:
                     if _style_centered_headings(mono_p, centered_headings[pno], body_size, font_path):
