@@ -1,4 +1,4 @@
-"""PLaMo 論文リーダー（Windows アプリ）の起動ファイル。
+"""MLab論文リーダー（Windows アプリ）の起動ファイル。
 
   .venv\Scripts\pythonw.exe app.py            アプリの窓で開く
   .venv\Scripts\python.exe  app.py --browser  ブラウザで開く
@@ -129,7 +129,7 @@ def main() -> None:
             import webview
 
             api = Api()
-            window = webview.create_window("PLaMo 論文リーダー", url, width=1320, height=900, min_size=(760, 560),
+            window = webview.create_window("MLab論文リーダー", url, width=1320, height=900, min_size=(760, 560),
                                            js_api=api)
             api._window = window
             window.events.shown += lambda: set_window_icon(window)

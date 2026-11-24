@@ -207,7 +207,7 @@ async function showShare() {
     const remote = info.remote_url ?
       '<h4>外出先から（Tailscale）</h4><img class="qr" src="' + fileUrl("/share/qr.svg") + "&which=remote&r=" + Date.now() + '" alt="外出先用のQRコード"><div class="url">' + esc(info.remote_url) + "</div>" +
       '<div class="modal-actions" style="justify-content:flex-start;margin-top:6px"><button id="copyRemote">リンクをコピー</button>' +
-      '<a class="btn" href="mailto:?subject=' + encodeURIComponent("論文リーダー（外出先用）") + "&body=" + encodeURIComponent(info.remote_url) + '">自分にメールで送る</a></div>' +
+      '<a class="btn" href="mailto:?subject=' + encodeURIComponent("MLab論文リーダー（外出先用）") + "&body=" + encodeURIComponent(info.remote_url) + '">自分にメールで送る</a></div>' +
       '<p class="note">このアドレスは毎回同じです。一度開いてブックマークか「ホーム画面に追加」をしておけば、次からQRコードは要りません。iPadでもTailscaleを起動してから開いてください。PCがスリープしていると開けません。</p>'
       : '<p class="note">外出先から読むには、PCとiPadに <a href="https://tailscale.com/download" target="_blank" rel="noopener">Tailscale</a> を入れて同じアカウントでログインし、この画面を開き直してください。</p>';
     modal('<h3>iPadで読む</h3><p>iPadのカメラでQRコードを読み取ってください。Safariで開いたら、共有メニューの「ホーム画面に追加」でアプリのように使えます。</p>' +

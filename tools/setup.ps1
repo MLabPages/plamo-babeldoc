@@ -1,5 +1,5 @@
 ﻿<#
-PLaMo 論文リーダーのセットアップ（Windows 10/11）。
+MLab論文リーダーのセットアップ（Windows 10/11）。
 
   powershell -ExecutionPolicy Bypass -File tools\setup.ps1                 # 2B モデル
   powershell -ExecutionPolicy Bypass -File tools\setup.ps1 -Models 0.8b,2b,8b
@@ -75,5 +75,5 @@ if (-not $NoShortcuts) {
 }
 
 Write-Host ''
-Write-Host 'セットアップが終わりました。「PLaMo論文リーダー」を開いてください。' -ForegroundColor Green
+Write-Host 'セットアップが終わりました。「MLab論文リーダー」を開いてください。' -ForegroundColor Green
 Write-Host '初回の翻訳では、BabelDOC がレイアウト解析用のデータとフォントをダウンロードします。'

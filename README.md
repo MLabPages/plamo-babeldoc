@@ -1,4 +1,6 @@
-# PLaMo 論文リーダー
+# MLab論文リーダー
+
+MLabが開発する論文翻訳・閲覧アプリです。PLaMo 3 Translate 対応 · Built with PLaMo
 
 論文PDFを、元のレイアウトを保ったまま日本語に訳して読むWindowsアプリです。
 レイアウト処理は [BabelDOC](https://github.com/funstory-ai/BabelDOC)、翻訳はPC内で動く
@@ -9,7 +11,7 @@ Preferred Networks の **PLaMo 3 Translate**（0.8B / 2B / 8B）か、Google の
 ### インストーラーで入れる（おすすめ）
 
 1. [リリースページ](https://github.com/MLabPages/plamo-babeldoc/releases/latest) から
-   `PLaMoPaperReader-Setup.exe` をダウンロードして、ダブルクリックします。
+   `MLabPaperReader-Setup.exe` をダウンロードして、ダブルクリックします。
 2. 「WindowsによってPCが保護されました」と出たら、「詳細情報」→「実行」を押します
    （署名のない個人開発のアプリに出る表示です）。
 3. 使う翻訳モデルを選んで「インストール」を押します。標準の 2B なら、ダウンロードは合計で約3GBです。
@@ -18,7 +20,7 @@ Preferred Networks の **PLaMo 3 Translate**（0.8B / 2B / 8B）か、Google の
 PLaMo 3 Translate はインストーラーがダウンロードし、デスクトップとスタートメニューにショートカットを作ります。
 途中で止まっても、もう一度実行すれば続きから再開します。モデルを後から足すときも、同じインストーラーで追加を選びます。
 アンインストールは、Windows の「設定」→「アプリ」→「インストールされているアプリ」から行います。
-タスクマネージャーには「PLaMo 論文リーダー」の名前で表示されます。説明欄とアイコンを書き換えた Python
+タスクマネージャーには「MLab論文リーダー」の名前で表示されます。説明欄とアイコンを書き換えた Python
 （`.venv\Scripts\PLaMoPaperReader.exe`）でアプリを動かしています。
 
 ### コマンドで入れる
@@ -41,14 +43,14 @@ PLaMo を使う限り論文を外部に送らずに PC 内で翻訳します。
 
 ## 起動
 
-デスクトップかスタートメニューの「PLaMo論文リーダー」を開きます。
+デスクトップかスタートメニューの「MLab論文リーダー」を開きます。
 
 - ショートカットを作り直すとき: `powershell -ExecutionPolicy Bypass -File tools\make_shortcuts.ps1`
 - ブラウザで開くとき: `.venv\Scripts\python.exe app.py --browser`
 
 ### タスクバーに固定
 
-スタートメニューで「PLaMo論文リーダー」を右クリックし、「詳細」→「タスクバーにピン留めする」を選びます。
+スタートメニューで「MLab論文リーダー」を右クリックし、「詳細」→「タスクバーにピン留めする」を選びます。
 論文と「訳」の専用アイコンで表示します。最小化している間も翻訳やiPad共有は続きます。
 ウィンドウを閉じるとアプリは終了します。Windowsへのログイン時に自動起動する設定ではありません。
 

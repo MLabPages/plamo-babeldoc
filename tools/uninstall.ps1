@@ -1,13 +1,13 @@
-﻿# PLaMo 論文リーダーのアンインストール（Windows の「アプリ」一覧から呼ばれる）。
+﻿# MLab論文リーダーのアンインストール（Windows の「アプリ」一覧から呼ばれる）。
 param([switch]$Quiet, [switch]$RemoveLibrary)
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName System.Windows.Forms
 $root = Split-Path $PSScriptRoot -Parent
-$title = 'PLaMo 論文リーダー'
+$title = 'MLab論文リーダー'
 Set-Location $env:TEMP
 
 if (-not $Quiet) {
-    $ok = [System.Windows.Forms.MessageBox]::Show("PLaMo 論文リーダーをアンインストールしますか？`n`n$root", $title, 'YesNo', 'Question')
+    $ok = [System.Windows.Forms.MessageBox]::Show("MLab論文リーダーをアンインストールしますか？`n`n$root", $title, 'YesNo', 'Question')
     if ($ok -ne 'Yes') { exit 1 }
     $lib = Join-Path $root 'library'
     if ((Test-Path $lib) -and (Get-ChildItem $lib -ErrorAction SilentlyContinue)) {
@@ -26,7 +26,7 @@ Start-Sleep -Milliseconds 800
 # このフォルダを指すショートカットだけを消す
 $sh = New-Object -ComObject WScript.Shell
 foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
-    $lnk = Join-Path $dir 'PLaMo論文リーダー.lnk'
+    $lnk = Join-Path $dir 'MLab論文リーダー.lnk'
     if ((Test-Path $lnk) -and $sh.CreateShortcut($lnk).WorkingDirectory -eq $root) { Remove-Item -LiteralPath $lnk -Force }
 }
 

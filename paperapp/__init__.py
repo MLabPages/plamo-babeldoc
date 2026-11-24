@@ -1,1 +1,1 @@
-"""PLaMo 論文リーダー（BabelDOC + PLaMo / Gemini）。"""
+"""MLab論文リーダー（BabelDOC + PLaMo / Gemini）。"""

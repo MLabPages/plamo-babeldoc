@@ -1,4 +1,4 @@
-// PLaMo 論文リーダーのインストーラー（.NET Framework 4.8 / C# 5。installer\build.ps1 でビルド）。
+// MLab論文リーダーのインストーラー（.NET Framework 4.8 / C# 5。installer\build.ps1 でビルド）。
 // 管理者権限なしで %LOCALAPPDATA%\Programs\PLaMoPaperReader に入れ、必要なものをダウンロードする。
 //   /silent /dir=<path> /models=0.8b,2b /cpu /noshortcuts /noregister /nolaunch  （試験・一括導入用）
 using System;
@@ -13,16 +13,16 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyTitle("PLaMo 論文リーダー セットアップ")]
-[assembly: System.Reflection.AssemblyProduct("PLaMo 論文リーダー")]
+[assembly: System.Reflection.AssemblyTitle("MLab論文リーダー セットアップ")]
+[assembly: System.Reflection.AssemblyProduct("MLab論文リーダー")]
 [assembly: System.Reflection.AssemblyCompany("MLabPages")]
-[assembly: System.Reflection.AssemblyVersion("1.0.10.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.10.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.11.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.11.0")]
 
 static class Setup
 {
-    public const string Version = "1.0.10";
-    public const string Tag = "v1.0.10";
+    public const string Version = "1.0.11";
+    public const string Tag = "v1.0.11";
     const string Repo = "MLabPages/plamo-babeldoc";
     const string LlamaBuild = "b12211";
     const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\PLaMoPaperReader";
@@ -164,7 +164,7 @@ static class Setup
             report("アンインストール情報を登録しています", 96);
             using (var k = Registry.CurrentUser.CreateSubKey(UninstallKey))
             {
-                k.SetValue("DisplayName", "PLaMo 論文リーダー");
+                k.SetValue("DisplayName", "MLab論文リーダー");
                 k.SetValue("DisplayVersion", Version);
                 k.SetValue("Publisher", "MLabPages");
                 k.SetValue("InstallLocation", dir);
@@ -301,7 +301,7 @@ class SetupForm : Form
     public SetupForm(Setup.Options o)
     {
         opts = o;
-        Text = "PLaMo 論文リーダー セットアップ " + Setup.Version;
+        Text = "MLab論文リーダー セットアップ " + Setup.Version;
         Font = new Font("Yu Gothic UI", 9.5f);
         AutoScaleMode = AutoScaleMode.Dpi;
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -397,7 +397,7 @@ class SetupForm : Form
     {
         running = false;
         finished = true;
-        status.Text = "インストールが終わりました。デスクトップとスタートメニューの「PLaMo論文リーダー」から開けます。\r\n初回の翻訳では、レイアウト解析用のデータを追加でダウンロードします。";
+        status.Text = "インストールが終わりました。デスクトップとスタートメニューの「MLab論文リーダー」から開けます。\r\n初回の翻訳では、レイアウト解析用のデータを追加でダウンロードします。";
         installButton.Text = "完了";
         installButton.Enabled = true;
         cancelButton.Visible = false;

@@ -1,4 +1,4 @@
-// Python の実行ファイルを「PLaMo 論文リーダー」として動かすためのコピーを作る。
+// Python の実行ファイルを「MLab論文リーダー」として動かすためのコピーを作る。
 // .venv\Scripts に pythonw.exe と DLL をコピーし（Windows の従来の venv と同じ配置）、
 // 実行ファイルの説明欄とアイコンを書き換える。タスクマネージャーにアプリ名で表示される。
 //   brand.exe <venvのScripts> <Pythonのhome> <icoファイル> <出力exe名> <版>
@@ -134,12 +134,12 @@ static class Brand
         var strings = new List<byte[]>();
         var pairs = new[,] {
             { "CompanyName", "MLabPages" },
-            { "FileDescription", "PLaMo 論文リーダー" },
+            { "FileDescription", "MLab論文リーダー" },
             { "FileVersion", version },
             { "InternalName", "PLaMoPaperReader" },
             { "LegalCopyright", "Python runtime: Copyright Python Software Foundation (PSF License). App: AGPL-3.0" },
             { "OriginalFilename", "PLaMoPaperReader.exe" },
-            { "ProductName", "PLaMo 論文リーダー" },
+            { "ProductName", "MLab論文リーダー" },
             { "ProductVersion", version },
         };
         for (int i = 0; i < pairs.GetLength(0); i++)

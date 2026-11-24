@@ -1,4 +1,4 @@
-# Build installer\dist\PLaMoPaperReader-Setup.exe with the .NET Framework compiler built into Windows.
+# Build installer\dist\MLabPaperReader-Setup.exe with the .NET Framework compiler built into Windows.
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $root = Split-Path $here -Parent
@@ -7,7 +7,7 @@ $dist = Join-Path $here 'dist'
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 $cscArgs = @(
     '/nologo', '/target:winexe', '/optimize+', '/codepage:65001',
-    ('/out:' + (Join-Path $dist 'PLaMoPaperReader-Setup.exe')),
+    ('/out:' + (Join-Path $dist 'MLabPaperReader-Setup.exe')),
     ('/win32icon:' + (Join-Path $root 'assets\app.ico')),
     ('/win32manifest:' + (Join-Path $here 'app.manifest')),
     '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll',
@@ -16,5 +16,5 @@ $cscArgs = @(
 )
 & $csc @cscArgs
 if ($LASTEXITCODE -ne 0) { throw 'build failed' }
-Get-Item (Join-Path $dist 'PLaMoPaperReader-Setup.exe') | Select-Object FullName, Length
+Get-Item (Join-Path $dist 'MLabPaperReader-Setup.exe') | Select-Object FullName, Length
 
