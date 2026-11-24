@@ -18,7 +18,12 @@ for f in ("C:/Windows/Fonts/YuGothB.ttc", "C:/Windows/Fonts/meiryob.ttc", "C:/Wi
     if Path(f).exists():
         font = ImageFont.truetype(f, 144)
         break
-d.text((330, 335), "M", font=font, fill=(255, 253, 248, 255), anchor="mm")
+# Center the rendered letter, rather than the font's line box.
+mask = Image.new("L", (S, S))
+ImageDraw.Draw(mask).text((S // 2, S // 2), "M", font=font, fill=255, anchor="mm")
+letter = mask.crop(mask.getbbox())
+img.paste((255, 253, 248, 255),
+          (330 - letter.width // 2, 338 - letter.height // 2), letter)
 img.save(out / "app.png")
 img.resize((192, 192), Image.Resampling.LANCZOS).save(ROOT / "paperapp" / "static" / "icon.png")
 img.save(out / "app.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
