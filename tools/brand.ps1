@@ -1,4 +1,4 @@
-# .venv\Scripts\PLaMoPaperReader.exe（説明欄とアイコンをアプリ名にした Python）を作る。
+﻿# .venv\Scripts\PLaMoPaperReader.exe（説明欄とアイコンをアプリ名にした Python）を作る。
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $version = '1.0.11'
