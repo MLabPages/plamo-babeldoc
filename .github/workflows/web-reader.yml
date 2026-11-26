@@ -23,25 +23,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
       - name: Prepare static reader
-        env:
-          CLIENT_ID: ${{ vars.MLAB_GOOGLE_CLIENT_ID }}
-          PICKER_KEY: ${{ vars.MLAB_GOOGLE_API_KEY }}
-          PROJECT_NUMBER: ${{ vars.MLAB_GOOGLE_PROJECT_NUMBER }}
         run: |
           mkdir _site
           cp web/index.html web/privacy.html web/reader.css web/reader.js _site/
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          config = {
-              "clientId": os.environ["CLIENT_ID"],
-              "apiKey": os.environ["PICKER_KEY"],
-              "projectNumber": os.environ["PROJECT_NUMBER"],
-          }
-          Path("_site/config.js").write_text("window.mlabGoogleDrive = " + json.dumps(config) + ";\n")
-          PY
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
