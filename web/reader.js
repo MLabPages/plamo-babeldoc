@@ -192,6 +192,6 @@ if (config?.clientId && config.apiKey && config.projectNumber) {
     status.textContent = drive.title + " 端末のファイルは開けます。";
   });
 } else {
-  drive.title = "Google Drive連携には管理者による初期設定が必要です。";
   drive.hidden = true;
+  status.textContent += " Google Drive連携は現在準備中です。";
 }
