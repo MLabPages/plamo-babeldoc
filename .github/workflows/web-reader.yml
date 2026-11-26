@@ -1,0 +1,49 @@
+name: Deploy Web Reader
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.publish.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - name: Prepare static reader
+        env:
+          CLIENT_ID: ${{ vars.MLAB_GOOGLE_CLIENT_ID }}
+          PICKER_KEY: ${{ vars.MLAB_GOOGLE_API_KEY }}
+          PROJECT_NUMBER: ${{ vars.MLAB_GOOGLE_PROJECT_NUMBER }}
+        run: |
+          mkdir _site
+          cp web/index.html web/privacy.html web/reader.css web/reader.js _site/
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          config = {
+              "clientId": os.environ["CLIENT_ID"],
+              "apiKey": os.environ["PICKER_KEY"],
+              "projectNumber": os.environ["PROJECT_NUMBER"],
+          }
+          Path("_site/config.js").write_text("window.mlabGoogleDrive = " + json.dumps(config) + ";\n")
+          PY
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - uses: actions/deploy-pages@v4
+        id: publish
