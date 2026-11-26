@@ -15,6 +15,9 @@ const api = async (path, opt = {}) => {
 const fileUrl = (path) => "/api" + path + "?t=" + encodeURIComponent(TOKEN);
 const toast = (msg) => { const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.add("hidden"), 3500); };
 const fmtSec = (s) => s >= 60 ? Math.floor(s / 60) + "分" + Math.round(s % 60) + "秒" : Math.round(s) + "秒";
+const copySize = (n) => n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(2) + " GB"
+  : n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + " MB" : Math.ceil(n / 1024) + " KB";
+const webCopy = (payload) => api("/web_copy", {method:"POST", body:JSON.stringify(payload)});
 
 let state = null, library = [], pollTimer = null;
 const prefs = Object.assign({theme: "light", font: "serif", fs: 19, lh: 1.95, w: 38, orig: false, figs: true, rate: 1.1, voice: "", zoom: 1},
@@ -78,14 +81,16 @@ function renderLibrary() {
       '<div class="card-sub">' + esc(d.filename) + (d.pages ? " · " + d.pages + "ページ" : "") + " · " + new Date(d.created * 1000).toLocaleString("ja-JP") + "</div>" +
       '<div class="chips">' + chips + "</div>" + errs +
       '<div class="card-actions">' + (opts ? '<select data-eng-for="' + d.id + '">' + opts + '</select><button data-more="' + d.id + '">このエンジンでも翻訳</button>' : "") +
-      '<span class="grow"></span><a class="btn" style="font-size:13px;min-height:32px;padding:5px 10px" target="_blank" href="' + fileUrl("/doc/" + d.id + "/original") + '">原文PDF</a><button data-del="' + d.id + '">削除</button></div></div>';
+      '<span class="grow"></span>' + (firstDone && state.is_local ? '<button data-web-copy="' + d.id + '">Webで読む</button>' : "") +
+      '<a class="btn" style="font-size:13px;min-height:32px;padding:5px 10px" target="_blank" href="' + fileUrl("/doc/" + d.id + "/original") + '">原文PDF</a><button data-del="' + d.id + '">削除</button></div></div>';
   }).join("");
 }
 $("#library").addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-read],[data-retry],[data-more],[data-del],[data-cancel]");
+  const t = ev.target.closest("[data-read],[data-retry],[data-more],[data-del],[data-cancel],[data-web-copy]");
   if (!t) return;
   try {
     if (t.dataset.read) openReader(t.dataset.read, t.dataset.engine);
+    else if (t.dataset.webCopy) await showWebCopy(library.find(d => d.id === t.dataset.webCopy));
     else if (t.dataset.cancel) { await api("/doc/" + t.dataset.cancel + "/cancel?engine=" + t.dataset.engine, {method: "POST"}); loadLibrary(); }
     else if (t.dataset.retry) { await api("/doc/" + t.dataset.retry + "/translate?engine=" + t.dataset.engine, {method: "POST"}); loadLibrary(); }
     else if (t.dataset.more) { const eng = document.querySelector('[data-eng-for="' + t.dataset.more + '"]').value; await api("/doc/" + t.dataset.more + "/translate?engine=" + eng + refsParam(), {method: "POST"}); loadLibrary(); }
@@ -114,6 +119,70 @@ function modal(html) { $("#modalBox").innerHTML = html; $("#modal").classList.re
 function closeModal() { $("#modal").classList.add("hidden"); }
 $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal" || e.target.dataset.close !== undefined) closeModal(); });
 
+async function showWebCopy(doc) {
+  if (!state.settings.web_copy_dir) {
+    toast("設定で「Webで読む」の同期先を選んでください");
+    $("#btnSettings").click();
+    return;
+  }
+  const engines = Object.entries(doc.translations).filter(([, t]) => t.status === "done");
+  modal('<h3>Webで読む</h3><p>' + esc(doc.title_ja || doc.title) + '</p>' +
+    '<label for="webEngine">翻訳エンジン</label><select id="webEngine">' +
+    engines.map(([id, t]) => '<option value="' + esc(id) + '">' + esc(t.label || id) + '</option>').join("") +
+    '</select><p class="note">読書用HTMLに本文・原文・図表を保存します。必要なPDFだけ追加できます。</p>' +
+    '<div id="webPdfs"><label><input type="checkbox" value="original"> 原文PDF</label>' +
+    '<label><input type="checkbox" value="translated"> 日本語訳PDF</label>' +
+    '<label><input type="checkbox" value="dual"> 対訳PDF</label></div>' +
+    '<p class="note" id="webEstimate" role="status"></p><div class="modal-actions">' +
+    '<button data-close>閉じる</button><button class="primary" id="webPublish" disabled>同期フォルダに保存</button></div>');
+  const engine = $("#webEngine"), pdfs = $("#webPdfs"), status = $("#webEstimate"), save = $("#webPublish");
+  let estimateId = 0;
+  const payload = () => ({id:doc.id, engine:engine.value, pdfs:[...pdfs.querySelectorAll(":checked")].map(el => el.value)});
+  const estimate = async () => {
+    const id = ++estimateId;
+    save.disabled = true;
+    status.textContent = "容量を計算中…";
+    try {
+      const r = await webCopy({...payload(), action:"estimate"});
+      if (id !== estimateId) return;
+      status.textContent = "保存する容量 " + copySize(r.bytes);
+      save.disabled = false;
+    } catch (e) { if (id === estimateId) status.textContent = e.message; }
+  };
+  engine.onchange = pdfs.onchange = estimate;
+  save.onclick = async () => {
+    save.disabled = true;
+    engine.disabled = true;
+    pdfs.querySelectorAll("input").forEach(el => el.disabled = true);
+    try {
+      const r = await webCopy({...payload(), action:"save"});
+      status.textContent = "保存しました。同期フォルダ内の合計 " + copySize(r.bytes);
+    } catch (e) { status.textContent = e.message; }
+    finally {
+      save.disabled = engine.disabled = false;
+      pdfs.querySelectorAll("input").forEach(el => el.disabled = false);
+    }
+  };
+  await estimate();
+}
+
+async function listWebCopies(panel) {
+  try {
+    const r = await webCopy({action:"list"});
+    panel.innerHTML = '<p class="note">この機能で保存した容量 ' + copySize(r.bytes) +
+      '（クラウド全体の使用量ではありません）</p>' +
+      r.copies.map((item, i) => '<div class="eng-row"><span>' + esc(item.name.split("--").slice(1).join("--")) +
+        ' · ' + copySize(item.bytes) + '</span> <button data-remove-copy="' + i + '">同期から外す</button></div>').join("");
+    panel.querySelectorAll("[data-remove-copy]").forEach(button => button.onclick = async () => {
+      if (!confirm("クラウド同期用のコピーを削除しますか？ PCの論文は残ります。")) return;
+      try {
+        await webCopy({action:"remove", name:r.copies[Number(button.dataset.removeCopy)].name});
+        await listWebCopies(panel);
+      } catch (e) { toast(e.message); }
+    });
+  } catch (e) { panel.textContent = e.message; }
+}
+
 $("#btnSettings").addEventListener("click", async () => {
   await loadState();
   const s = state.settings;
@@ -132,6 +201,10 @@ $("#btnSettings").addEventListener("click", async () => {
   }).join("");
   const gem = state.engines.find((e) => e.id === "gemini");
   const pywv = window.pywebview && window.pywebview.api && window.pywebview.api.choose_folder;
+  const webBox = state.is_local ? '<h4>Webで読む（選んだ論文だけ同期）</h4>' +
+    '<p class="note">ご自身のOneDriveなどの同期フォルダを選びます。外出先ではクラウドにログインし、MLab Web Library 内のHTMLをダウンロードしてブラウザで開きます。</p>' +
+    '<div class="key-row export-row"><input id="webCopyDir" type="text" aria-label="読書用の同期フォルダ" value="' + esc(s.web_copy_dir || "") + '">' +
+    (pywv ? '<button id="webCopyPick">参照...</button>' : "") + '<button id="webCopySave">保存</button></div><div id="webCopies"></div>' : "";
   const exportBox = state.is_local ?
     '<h4>PCを開けないときのために（クラウドのフォルダへ自動保存）</h4>' +
     '<p class="note">OneDrive・Googleドライブ・iCloudなど、クラウドと同期しているフォルダを選ぶと、翻訳が終わるたびに日本語訳と対訳のPDFをそこへ保存します。iPadでは各クラウドのアプリやファイルアプリで開けます。電車などでオフラインで読むときは、iPad側でフォルダを「オフラインで使用可能」にしておくと確実です。論文はそのクラウドに保存されます。</p>' +
@@ -141,7 +214,7 @@ $("#btnSettings").addEventListener("click", async () => {
     (s.export_dir ? '<button id="exportOff">自動保存をやめる</button>' : "") + "</div>" : "";
   modal('<h3>翻訳エンジンとデータの扱い</h3>' + rows +
     '<p class="note">APIキーはWindowsのユーザー環境変数に保存します（このアプリのファイルには書きません）。PowerShellの <code>setx</code> で設定した値も使えます。</p>' +
-    exportBox +
+    webBox + exportBox +
     '<label for="gModel">Geminiのモデル（一覧から選ぶか、モデル名を直接入力）</label><input type="text" id="gModel" list="gModels" value="' + esc(s.gemini_model) + '" autocomplete="off" spellcheck="false"><datalist id="gModels"></datalist>' +
     '<div class="modal-actions"><span class="grow"></span><button data-close>閉じる</button><button class="primary" id="gSave">モデル名を保存</button></div>');
   if (gem && gem.available) {
@@ -187,6 +260,17 @@ $("#btnSettings").addEventListener("click", async () => {
     saveExport(f);
   };
   if ($("#exportOff")) $("#exportOff").onclick = () => saveExport("");
+  if ($("#webCopyPick")) $("#webCopyPick").onclick = async () => {
+    const f = await window.pywebview.api.choose_folder($("#webCopyDir").value.trim() || s.export_hint || "");
+    if (f) $("#webCopyDir").value = f;
+  };
+  if ($("#webCopySave")) $("#webCopySave").onclick = async () => {
+    try {
+      await api("/settings", {method:"POST", body:JSON.stringify({web_copy_dir:$("#webCopyDir").value.trim()})});
+      $("#btnSettings").click();
+    } catch (e) { toast(e.message); }
+  };
+  if ($("#webCopies") && s.web_copy_dir) listWebCopies($("#webCopies"));
   if ($("#exportAll")) $("#exportAll").onclick = async () => {
     try {
       const r = await api("/export_all", {method: "POST", body: "{}"});

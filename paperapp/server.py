@@ -25,6 +25,7 @@ from .envkeys import env_for_child, get_env, set_user_env
 from .registry import ENGINES as REGISTRY
 from .registry import PlamoEngine, engine_label, engine_list
 from .reading import reading_is_current, write_reading
+from . import web_copy
 
 ID_RE = re.compile(r"^[a-z0-9]{6,32}$")
 ENGINES = set(REGISTRY)
@@ -548,7 +549,7 @@ def make_handler(app: App):
                         "engines": engine_list(s),
                         "settings": {"engine": s.get("engine"), "gemini_model": s.get("gemini_model"),
                                      "translate_references": bool(s.get("translate_references")),
-                                     **({"export_dir": s.get("export_dir") or "",
+                                     **({"export_dir": s.get("export_dir") or "", "web_copy_dir": s.get("web_copy_dir") or "",
                                          "export_hint": get_env("OneDrive")}
                                         if self.client_address[0] == "127.0.0.1" else {})},
                         "share": app.share_info(),
@@ -618,6 +619,49 @@ def make_handler(app: App):
                 return self._err(401, "アクセス用のリンクが正しくありません。")
             parts = u.path.strip("/").split("/")[1:]
             try:
+                if parts == ["web_copy"]:
+                    if self.client_address[0] != "127.0.0.1" or self.server is not app.local_server:
+                        return self._err(403, "PCの画面から操作してください。")
+                    body = json.loads(self._body(8192) or b"{}")
+                    if not isinstance(body, dict):
+                        raise ValueError("操作が正しくありません。")
+                    root = load_settings().get("web_copy_dir")
+                    if not root or not Path(root).is_dir():
+                        raise ValueError("先に設定でクラウド同期フォルダを選んでください。")
+                    folder = Path(root) / "MLab Web Library"
+                    if folder.is_symlink() or folder.resolve() != Path(root).resolve() / folder.name:
+                        raise ValueError("書き出し先のフォルダを確認してください。")
+                    action = body.get("action")
+                    if action == "remove":
+                        target = next((p for p in web_copy.copies(folder) if p.name == body.get("name")), None)
+                        if target is None:
+                            raise ValueError("同期コピーが見つかりません。")
+                        target.unlink()
+                    elif action in ("estimate", "save"):
+                        doc_id, engine = body.get("id"), body.get("engine")
+                        kinds = body.get("pdfs", [])
+                        if (not isinstance(doc_id, str) or not ID_RE.fullmatch(doc_id)
+                                or not isinstance(engine, str) or engine not in ENGINES
+                                or not isinstance(kinds, list)
+                                or any(not isinstance(k, str) or k not in web_copy.KINDS for k in kinds)):
+                            raise ValueError("論文またはPDFの選択が正しくありません。")
+                        meta = app.library.meta(doc_id)
+                        if meta.get("translations", {}).get(engine, {}).get("status") != "done":
+                            raise ValueError("翻訳が完了した論文を選んでください。")
+                        source = app.library.doc_dir(doc_id)
+                        ensure_reading(source, source / "out" / engine)
+                        plan = web_copy.plan(meta, source, engine, kinds)
+                        if action == "estimate":
+                            return self._json({"bytes": web_copy.size(plan)})
+                        prefix = f"MLab-{doc_id}-{engine}--"
+                        target = next((p for p in web_copy.copies(folder) if p.name.startswith(prefix)), None)
+                        if target is None:
+                            target = folder / (prefix + pdf_download_name(meta, "original")[:-4][:90] + ".html")
+                        web_copy.save(target, plan)
+                    elif action != "list":
+                        raise ValueError("操作が正しくありません。")
+                    entries = [{"name": p.name, "bytes": p.stat().st_size} for p in web_copy.copies(folder)]
+                    return self._json({"copies": entries, "bytes": sum(entry["bytes"] for entry in entries)})
                 if parts == ["translate"]:
                     engine = (q.get("engine") or ["plamo-2b"])[0]
                     name = (q.get("name") or ["paper.pdf"])[0]
@@ -657,14 +701,16 @@ def make_handler(app: App):
                         return self._err(400, "モデル名に使えない文字が含まれています。")
                     if isinstance(body.get("translate_references"), bool):
                         allowed["translate_references"] = body["translate_references"]
-                    if isinstance(body.get("export_dir"), str):
+                    for key in ("export_dir", "web_copy_dir"):
+                        if not isinstance(body.get(key), str):
+                            continue
                         # 書き出し先はこのPCの画面からだけ変えられる
                         if self.client_address[0] != "127.0.0.1" or self.server is not app.local_server:
                             return self._err(403, "書き出し先はPCの画面から設定してください。")
-                        folder = body["export_dir"].strip().strip('"')
+                        folder = body[key].strip().strip('"')
                         if folder and (len(folder) > 400 or not os.path.isdir(folder)):
                             return self._err(400, "そのフォルダが見つかりません。")
-                        allowed["export_dir"] = folder
+                        allowed[key] = folder
                     save_settings(allowed)
                     return self._json({"ok": True})
                 if parts == ["export_all"]:
